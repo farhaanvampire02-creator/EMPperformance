@@ -1,0 +1,55 @@
+{
+  "last_trained_at": "2026-11-06 14:38:15",
+  "dataset_file": "employee_performance_master.csv",
+  "dataset_rows": 1500,
+  "test_size": 0.2,
+  "fl_rounds": 8,
+  "local_epochs": 8,
+  "fl_learning_rate": 0.005,
+  "backup_dir": "E:\\EMPperformance\\model_backups\\pre_retrain_20261106_143643",
+  "random_forest_metrics": {
+    "MAE": 5.417843666666667,
+    "RMSE": 6.833480860603426,
+    "R2": 0.2673347732437654
+  },
+  "federated_metrics": {
+    "MAE": 5.814579317220051,
+    "RMSE": 7.218623382881503,
+    "R2": 0.18241976653889014,
+    "best_round": 1,
+    "val_mae_best": 5.668205552842882
+  },
+  "mean_baseline_metrics": {
+    "MAE": 6.47016888888889,
+    "RMSE": 8.07680788150382,
+    "R2": -0.023531282015855748
+  },
+  "fl_diagnostics": {
+    "target_train": {
+      "min": 54.0,
+      "max": 100.0,
+      "mean": 77.41901666666668,
+      "std": 7.961654248106288
+    },
+    "prediction_test": {
+      "min": 71.63699340820312,
+      "max": 90.7880859375,
+      "mean": 78.68278503417969,
+      "std": 3.749988079071045
+    },
+    "output_bias_init": 77.25257843137254,
+    "client_sizes": {
+      "Engineering": 136,
+      "Finance": 155,
+      "HR": 175,
+      "IT": 73,
+      "Marketing": 195,
+      "Operations": 73,
+      "Sales": 213
+    },
+    "learning_rate": 0.005,
+    "local_epochs": 8,
+    "rounds": 8,
+    "best_round": 1
+  }
+}
