@@ -34,6 +34,59 @@ TRAINING_META_PATH = BASE_DIR / "model_training_meta.json"
 BACKUP_DIR = BASE_DIR / "model_backups"
 IMPORT_BACKUP_DIR = BASE_DIR / "dataset_backups"
 
+# --- Field Sales Dedicated Paths and Schema ---
+FIELD_SALES_MASTER_PATH = BASE_DIR / "field_sales_master.csv"
+FIELD_SALES_MODEL_PATH = BASE_DIR / "field_sales_performance_model.pkl"
+FIELD_SALES_PREPROCESSOR_PATH = BASE_DIR / "field_sales_preprocessor.pkl"
+FIELD_SALES_META_PATH = BASE_DIR / "field_sales_training_meta.json"
+FIELD_SALES_HISTORY_PATH = BASE_DIR / "field_sales_training_history.csv"
+
+FIELD_SALES_FEATURES = [
+    "total_travel_km",
+    "clients_visited",
+    "leads_generated",
+    "orders_closed",
+    "sales_revenue",
+    "followups_completed",
+    "experience_years",
+    "conversion_rate",
+    "target_achievement_percentage"
+]
+
+FIELD_SALES_REQUIRED_COLUMNS = [
+    "employee_id",
+    "department",
+    "job_role",
+    "age",
+    "experience_years",
+    "total_travel_km",
+    "clients_visited",
+    "leads_generated",
+    "orders_closed",
+    "sales_revenue",
+    "followups_completed",
+    "sales_target",
+    "conversion_rate",
+    "target_achievement_percentage",
+    "performance_score",
+    "performance_status"
+]
+
+FIELD_SALES_NUMERIC_COLUMNS = [
+    "age",
+    "experience_years",
+    "total_travel_km",
+    "clients_visited",
+    "leads_generated",
+    "orders_closed",
+    "sales_revenue",
+    "followups_completed",
+    "sales_target",
+    "conversion_rate",
+    "target_achievement_percentage",
+    "performance_score"
+]
+
 FEATURES = [
     "attendance_percentage",
     "task_completion_rate",
@@ -175,6 +228,27 @@ st.markdown(
         margin-bottom: 0.55rem;
         color: #243b53;
         font-size: 0.94rem;
+    }
+    .emp-group-label {
+        font-size: 0.88rem;
+        font-weight: 700;
+        color: #334e68;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin: 0.15rem 0 0.55rem 0;
+    }
+    .emp-info-box {
+        background: #f0f7fa;
+        border: 1px solid #c9dde6;
+        border-radius: 10px;
+        padding: 0.85rem 1rem;
+        color: #243b53;
+        font-size: 0.92rem;
+        margin-bottom: 0.9rem;
+    }
+    .emp-result-wrap {
+        margin-top: 0.35rem;
+        margin-bottom: 0.75rem;
     }
     </style>
     """,
@@ -814,6 +888,208 @@ def generate_improvement_suggestions(values: dict, predicted_score: float):
     }
 
 
+def load_field_sales_training_meta():
+    if not FIELD_SALES_META_PATH.exists():
+        return {}
+    try:
+        return json.loads(FIELD_SALES_META_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_field_sales_training_meta(meta):
+    FIELD_SALES_META_PATH.write_text(
+        json.dumps(meta, indent=2),
+        encoding="utf-8"
+    )
+
+
+def validate_field_sales_dataframe(df: pd.DataFrame):
+    report = {
+        "ok": True,
+        "errors": [],
+        "warnings": [],
+        "missing_columns": [],
+        "missing_values": {},
+        "duplicate_rows": 0,
+        "duplicate_employee_ids": 0,
+        "rows": int(len(df)),
+        "columns": int(df.shape[1])
+    }
+
+    missing_cols = [c for c in FIELD_SALES_REQUIRED_COLUMNS if c not in df.columns]
+    report["missing_columns"] = missing_cols
+    if missing_cols:
+        report["ok"] = False
+        report["errors"].append(
+            "Missing required columns: " + ", ".join(missing_cols)
+        )
+        return report
+
+    working = df[FIELD_SALES_REQUIRED_COLUMNS].copy()
+
+    na_counts = working.isna().sum()
+    report["missing_values"] = {
+        col: int(count) for col, count in na_counts.items() if count > 0
+    }
+    if report["missing_values"]:
+        report["ok"] = False
+        report["errors"].append(
+            "Missing values found in: "
+            + ", ".join(f"{k} ({v})" for k, v in report["missing_values"].items())
+        )
+
+    report["duplicate_rows"] = int(working.duplicated().sum())
+    report["duplicate_employee_ids"] = int(working["employee_id"].duplicated().sum())
+    if report["duplicate_rows"] > 0:
+        report["warnings"].append(
+            f"{report['duplicate_rows']} fully duplicate row(s) detected."
+        )
+    if report["duplicate_employee_ids"] > 0:
+        report["warnings"].append(
+            f"{report['duplicate_employee_ids']} duplicate employee_id value(s) detected."
+        )
+
+    # Department validation: must be Field Sales
+    dept_series = working["department"].astype(str).str.strip()
+    invalid_depts = dept_series[dept_series != "Field Sales"].unique().tolist()
+    if invalid_depts:
+        report["ok"] = False
+        report["errors"].append(
+            f"Department must be 'Field Sales'. Found invalid values: {invalid_depts}"
+        )
+
+    for col in FIELD_SALES_NUMERIC_COLUMNS:
+        coerced = pd.to_numeric(working[col], errors="coerce")
+        invalid = int(coerced.isna().sum() - working[col].isna().sum())
+        if invalid > 0:
+            report["ok"] = False
+            report["errors"].append(
+                f"Column '{col}' has {invalid} non-numeric value(s)."
+            )
+
+    if report["ok"]:
+        numeric_view = working.copy()
+        for col in FIELD_SALES_NUMERIC_COLUMNS:
+            numeric_view[col] = pd.to_numeric(numeric_view[col], errors="coerce")
+
+        # Non-negative checks
+        non_neg_cols = [
+            "age", "experience_years", "total_travel_km", "clients_visited",
+            "leads_generated", "orders_closed", "sales_revenue",
+            "followups_completed", "sales_target", "conversion_rate",
+            "target_achievement_percentage", "performance_score"
+        ]
+        for c in non_neg_cols:
+            if (numeric_view[c] < 0).any():
+                report["ok"] = False
+                report["errors"].append(f"Column '{c}' cannot contain negative values.")
+
+        # Performance score 0-100
+        if (numeric_view["performance_score"] < 0).any() or (numeric_view["performance_score"] > 100).any():
+            report["ok"] = False
+            report["errors"].append("performance_score must be between 0 and 100.")
+
+        # orders_closed cannot exceed leads_generated
+        if (numeric_view["orders_closed"] > numeric_view["leads_generated"]).any():
+            report["ok"] = False
+            report["errors"].append(
+                "orders_closed cannot exceed leads_generated in Field Sales records."
+            )
+
+        # conversion_rate validation (0 - 100)
+        if (numeric_view["conversion_rate"] < 0).any() or (numeric_view["conversion_rate"] > 100).any():
+            report["warnings"].append("Some conversion_rate values are outside the standard 0-100% range.")
+
+    return report
+
+
+def generate_field_sales_recommendations(values: dict, predicted_score: float):
+    """Generate rule-based actionable recommendations for Field Sales personnel."""
+    recs = []
+    travel_km = values.get("total_travel_km", 0.0)
+    clients_visited = values.get("clients_visited", 0)
+    leads_gen = values.get("leads_generated", 0)
+    orders = values.get("orders_closed", 0)
+    revenue = values.get("sales_revenue", 0.0)
+    followups = values.get("followups_completed", 0)
+    target = values.get("sales_target", 1.0)
+    conv_rate = values.get("conversion_rate", 0.0)
+    target_ach = values.get("target_achievement_percentage", 0.0)
+
+    # 1. Low conversion rate
+    if conv_rate < 25.0:
+        recs.append(
+            "Low Conversion Rate (" + f"{conv_rate:.1f}%): "
+            "Enroll in Lead Conversion & Objection Handling Training to improve closing efficiency."
+        )
+    elif conv_rate >= 50.0:
+        recs.append(
+            "High Conversion Rate (" + f"{conv_rate:.1f}%): "
+            "Excellent deal closing ratio. Share best practices with regional sales peers."
+        )
+
+    # 2. Low target achievement
+    if target_ach < 75.0:
+        recs.append(
+            "Low Target Achievement (" + f"{target_ach:.1f}%): "
+            "Conduct structured pipeline review, prioritize high-value opportunities, and enhance negotiation skills."
+        )
+    elif target_ach >= 100.0:
+        recs.append(
+            "Target Achieved (" + f"{target_ach:.1f}%): "
+            "Outstanding revenue delivery against quota. Eligible for quarterly sales incentive recognition."
+        )
+
+    # 3. Low client visits
+    if clients_visited < 30:
+        recs.append(
+            "Low Client Touchpoint Count (" + str(int(clients_visited)) + " visits): "
+            "Optimize weekly route planning and territory coverage to increase field meetings."
+        )
+
+    # 4. Low lead generation
+    if leads_gen < 20:
+        recs.append(
+            "Low Lead Generation (" + str(int(leads_gen)) + " leads): "
+            "Strengthen local referral sourcing, partner networks, and cold outreach strategy."
+        )
+
+    # 5. Low follow-up completion
+    leads_safe = max(leads_gen, 1)
+    if followups < leads_safe * 1.5:
+        recs.append(
+            "Insufficient Follow-ups (" + str(int(followups)) + " completed): "
+            "Implement a structured CRM cadence (at least 2-3 touches per qualified prospect)."
+        )
+
+    # 6. High travel distance with low sales outcome
+    if travel_km > 1000.0 and (target_ach < 70.0 or orders < 10):
+        recs.append(
+            "High Travel Distance vs Low Outcome (" + f"{travel_km:.0f} km travelled, {orders} orders): "
+            "Review territory scheduling and travel efficiency; do not rely on travel volume alone without qualified conversion."
+        )
+
+    # 7. Overall performance score alignment
+    if predicted_score < 60.0:
+        recs.append(
+            "Performance Status: Needs Support (" + f"{predicted_score:.1f}/100). "
+            "Assign senior sales mentor, conduct weekly 1-on-1 deal reviews, and refresh product demonstration training."
+        )
+    elif predicted_score < 75.0:
+        recs.append(
+            "Performance Status: Monitor (" + f"{predicted_score:.1f}/100). "
+            "Performance is steady but has growth room. Focus on closing deals in final pipeline stages."
+        )
+    else:
+        recs.append(
+            "Performance Status: On Track (" + f"{predicted_score:.1f}/100). "
+            "Strong overall sales contribution. Focus on key strategic accounts and advanced enterprise solutions."
+        )
+
+    return recs
+
+
 def clear_model_caches():
     load_data.clear()
     load_model.clear()
@@ -821,6 +1097,38 @@ def clear_model_caches():
     load_scaler.clear()
     load_federated_history.clear()
     load_federated_metrics.clear()
+    load_field_sales_data.clear()
+    load_field_sales_model.clear()
+    load_field_sales_preprocessor.clear()
+    load_field_sales_history.clear()
+
+
+@st.cache_data
+def load_field_sales_data():
+    if FIELD_SALES_MASTER_PATH.exists():
+        return pd.read_csv(FIELD_SALES_MASTER_PATH)
+    return pd.DataFrame(columns=FIELD_SALES_REQUIRED_COLUMNS)
+
+
+@st.cache_resource
+def load_field_sales_model():
+    if FIELD_SALES_MODEL_PATH.exists():
+        return joblib.load(FIELD_SALES_MODEL_PATH)
+    return None
+
+
+@st.cache_resource
+def load_field_sales_preprocessor():
+    if FIELD_SALES_PREPROCESSOR_PATH.exists():
+        return joblib.load(FIELD_SALES_PREPROCESSOR_PATH)
+    return None
+
+
+@st.cache_data
+def load_field_sales_history():
+    if FIELD_SALES_HISTORY_PATH.exists():
+        return pd.read_csv(FIELD_SALES_HISTORY_PATH)
+    return pd.DataFrame(columns=["training_timestamp", "dataset_rows", "mae", "rmse", "r2"])
 
 
 # ---------------- LOAD DATA / MODELS ----------------
@@ -869,6 +1177,9 @@ training_meta = load_training_meta()
 st.sidebar.title("EMPperformance")
 st.sidebar.caption("HR Intelligence System")
 
+field_sales_df = load_field_sales_data()
+field_sales_meta = load_field_sales_training_meta()
+
 page = st.sidebar.radio(
     "Navigation",
     [
@@ -876,10 +1187,9 @@ page = st.sidebar.radio(
         "Employee Analytics",
         "Attendance Analytics",
         "Productivity Analytics",
-        "ML Performance Prediction",
-        "Federated Learning Prediction",
-        "Model Comparison",
-        "Federated Training History",
+        "Employee Performance Prediction",
+        "Field Sales Performance Prediction",
+        "Training History",
         "Data Import & Model Training",
         "Training Recommendation",
         "Employee Data"
@@ -887,10 +1197,16 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"Active dataset: `{active_data_path.name}`")
-st.sidebar.caption(f"Records: {len(df)}")
+st.sidebar.markdown("**Normal Employee Dataset**")
+st.sidebar.caption(f"Active: `{active_data_path.name}` ({len(df)} records)")
 if training_meta.get("last_trained_at"):
-    st.sidebar.caption(f"Last trained: {training_meta['last_trained_at']}")
+    st.sidebar.caption(f"Trained: {training_meta['last_trained_at']}")
+
+st.sidebar.markdown("**Field Sales Dataset**")
+fs_recs = len(field_sales_df) if field_sales_df is not None else 0
+st.sidebar.caption(f"Active: `{FIELD_SALES_MASTER_PATH.name}` ({fs_recs} records)")
+if field_sales_meta.get("last_trained_at"):
+    st.sidebar.caption(f"Trained: {field_sales_meta['last_trained_at']}")
 
 # ---------------- HEADER ----------------
 st.title("Employee Performance Intelligence")
@@ -968,38 +1284,144 @@ elif page == "Employee Analytics":
 
     st.header("Employee Analytics")
 
-    departments = ["All"] + sorted(df["department"].unique())
+    emp_tab1, emp_tab2 = st.tabs(["Normal Employee Analytics", "Field Sales Analytics"])
 
-    selected = st.selectbox("Select Department", departments)
+    with emp_tab1:
+        st.subheader("Departmental Workforce Analytics")
+        normal_depts = sorted(df["department"].unique())
+        if "Field Sales" not in normal_depts:
+            all_depts = ["All", "Field Sales"] + normal_depts
+        else:
+            all_depts = ["All"] + normal_depts
 
-    filtered = df if selected == "All" else df[
-        df["department"] == selected
-    ]
+        selected = st.selectbox("Select Department", all_depts, key="normal_dept_select")
 
-    st.metric("Employees", len(filtered))
+        if selected == "Field Sales":
+            if field_sales_df is not None and not field_sales_df.empty:
+                st.info("Field Sales has a dedicated KPI analytics suite in the 'Field Sales Analytics' tab above.")
+                filtered = field_sales_df.copy()
+            else:
+                filtered = pd.DataFrame()
+        elif selected == "All":
+            filtered = df.copy()
+        else:
+            filtered = df[df["department"] == selected]
 
-    fig = px.box(
-        filtered,
-        x="department",
-        y="performance_score",
-        color="department",
-        title="Department Performance Comparison"
-    )
+        st.metric("Employees in View", len(filtered))
 
-    st.plotly_chart(fig, width="stretch")
+        if not filtered.empty:
+            fig = px.box(
+                filtered,
+                x="department",
+                y="performance_score",
+                color="department",
+                title="Department Performance Comparison"
+            )
+            st.plotly_chart(fig, width="stretch")
 
-    fig = px.scatter(
-        filtered,
-        x="experience_years",
-        y="performance_score",
-        color="department",
-        hover_data=["employee_id"],
-        title="Experience vs Performance"
-    )
+            fig = px.scatter(
+                filtered,
+                x="experience_years",
+                y="performance_score",
+                color="department",
+                hover_data=["employee_id"],
+                title="Experience vs Performance"
+            )
+            st.plotly_chart(fig, width="stretch")
 
-    st.plotly_chart(fig, width="stretch")
+            st.dataframe(filtered, width="stretch")
+        else:
+            st.warning("No records found for selected department filter.")
 
-    st.dataframe(filtered, width="stretch")
+    with emp_tab2:
+        st.subheader("Field Sales Specialized KPI Analytics")
+        if field_sales_df is None or field_sales_df.empty:
+            st.info("No Field Sales dataset available. Import data in 'Data Import & Model Training' to view analytics.")
+        else:
+            fs_total = len(field_sales_df)
+            fs_travel = field_sales_df["total_travel_km"].sum()
+            fs_clients = field_sales_df["clients_visited"].sum()
+            fs_leads = field_sales_df["leads_generated"].sum()
+            fs_orders = field_sales_df["orders_closed"].sum()
+            fs_revenue = field_sales_df["sales_revenue"].sum()
+            fs_avg_conv = field_sales_df["conversion_rate"].mean()
+            fs_avg_ach = field_sales_df["target_achievement_percentage"].mean()
+            fs_avg_score = field_sales_df["performance_score"].mean()
+
+            # KPI Cards
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Total Field Sales Reps", fs_total)
+            k2.metric("Total Travel Distance", f"{fs_travel:,.1f} km")
+            k3.metric("Clients Visited", f"{fs_clients:,}")
+            k4.metric("Leads Generated", f"{fs_leads:,}")
+
+            k5, k6, k7, k8 = st.columns(4)
+            k5.metric("Orders Closed", f"{fs_orders:,}")
+            k6.metric("Total Revenue", f"${fs_revenue:,.2f}")
+            k7.metric("Avg Conversion Rate", f"{fs_avg_conv:.1f}%")
+            k8.metric("Avg Target Achievement", f"{fs_avg_ach:.1f}%")
+
+            st.metric("Average Performance Score", f"{fs_avg_score:.2f} / 100")
+            st.divider()
+
+            # Charts
+            c1, c2 = st.columns(2)
+            with c1:
+                fig_rev = px.histogram(
+                    field_sales_df,
+                    x="sales_revenue",
+                    nbins=20,
+                    title="Revenue Distribution ($)",
+                    color_discrete_sequence=["#1a6b8a"]
+                )
+                st.plotly_chart(fig_rev, width="stretch")
+
+            with c2:
+                fig_conv = px.scatter(
+                    field_sales_df,
+                    x="leads_generated",
+                    y="orders_closed",
+                    size="sales_revenue",
+                    color="performance_status",
+                    hover_data=["employee_id", "conversion_rate"],
+                    title="Leads vs Orders Closed (Size = Revenue)",
+                    color_discrete_map={"On Track": "#28a745", "Monitor": "#ffc107", "Needs Support": "#dc3545"}
+                )
+                st.plotly_chart(fig_conv, width="stretch")
+
+            c3, c4 = st.columns(2)
+            with c3:
+                fig_ach = px.box(
+                    field_sales_df,
+                    x="job_role",
+                    y="target_achievement_percentage",
+                    color="job_role",
+                    title="Target Achievement (%) by Role"
+                )
+                st.plotly_chart(fig_ach, width="stretch")
+
+            with c4:
+                status_counts = field_sales_df["performance_status"].value_counts().reset_index()
+                status_counts.columns = ["Status", "Count"]
+                fig_pie = px.pie(
+                    status_counts,
+                    names="Status",
+                    values="Count",
+                    title="Field Sales Performance Category Distribution",
+                    hole=0.4,
+                    color="Status",
+                    color_discrete_map={"On Track": "#28a745", "Monitor": "#ffc107", "Needs Support": "#dc3545"}
+                )
+                st.plotly_chart(fig_pie, width="stretch")
+
+            st.subheader("Field Sales Employee Performance Ranking")
+            ranking_cols = [
+                "employee_id", "job_role", "experience_years", "sales_revenue",
+                "sales_target", "target_achievement_percentage", "conversion_rate",
+                "performance_score", "performance_status"
+            ]
+            ranked_df = field_sales_df[ranking_cols].sort_values(by="performance_score", ascending=False).reset_index(drop=True)
+            st.dataframe(ranked_df, width="stretch")
 
 # =================================================
 # 3. ATTENDANCE ANALYTICS
@@ -1110,100 +1532,28 @@ elif page == "Productivity Analytics":
     st.plotly_chart(fig, width="stretch")
 
 # =================================================
-# 5. ML PERFORMANCE PREDICTION
-# =================================================
-elif page == "ML Performance Prediction":
-
-    st.header("ML Performance Prediction")
-
-    st.warning(
-        "Demo prediction using synthetic dataset. "
-        "This is not a validated real-world employee assessment."
-    )
-
-    if not MODEL_PATH.exists():
-        st.error("Model file not found!")
-        st.stop()
-
-    model = load_model()
-
-    with st.form("prediction_form"):
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            attendance = st.slider(
-                "Attendance Percentage", 0.0, 100.0, 90.0
-            )
-
-            completion = st.slider(
-                "Task Completion Rate", 0.0, 100.0, 80.0
-            )
-
-            quality = st.slider(
-                "Quality Score", 0.0, 100.0, 80.0
-            )
-
-            work_hours = st.number_input(
-                "Average Work Hours", 0.0, 24.0, 8.0
-            )
-
-        with col2:
-            training = st.number_input(
-                "Training Hours", 0.0, 100.0, 5.0
-            )
-
-            workload = st.slider(
-                "Workload Score", 0.0, 100.0, 50.0
-            )
-
-            tasks = st.number_input(
-                "Tasks Completed", 0, 1000, 40
-            )
-
-            experience = st.number_input(
-                "Experience Years", 0.0, 50.0, 3.0
-            )
-
-        submit = st.form_submit_button("Predict Performance")
-
-    if submit:
-
-        new_employee = pd.DataFrame([{
-            "attendance_percentage": attendance,
-            "task_completion_rate": completion,
-            "quality_score": quality,
-            "average_work_hours": work_hours,
-            "training_hours": training,
-            "workload_score": workload,
-            "tasks_completed": tasks,
-            "experience_years": experience
-        }])
-
-        new_employee = new_employee[FEATURES]
-
-        prediction = model.predict(new_employee)[0]
-
-        prediction = np.clip(prediction, 0, 100)
-
-        st.success(
-            f"Predicted Performance Score: {prediction:.2f}/100"
-        )
-
-        st.info(
-            "Prediction is an estimate. Use it only as supportive information."
-        )
-
-# =================================================
 # 5b. FEDERATED LEARNING PREDICTION
 # =================================================
-elif page == "Federated Learning Prediction":
+elif page == "Employee Performance Prediction":
 
     st.markdown(
         """
         <div class="emp-hero">
-            <h2>Employee Performance Intelligence</h2>
-            <p>AI-powered performance estimation and personalized development insights</p>
+            <h2>Employee Performance Prediction</h2>
+            <p>Estimate employee performance scores with the Federated Neural Network model and receive personalized development guidance</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        """
+        <div class="emp-info-box">
+            This page predicts a <strong>performance score (0–100)</strong> and
+            <strong>performance category</strong> from operational HR metrics using the
+            existing <strong>Federated Neural Network</strong> (FedAvg). It is separate from
+            Field Sales Performance Prediction. Enter attendance, productivity, quality,
+            workload, and experience inputs below to generate the score and recommendations.
         </div>
         """,
         unsafe_allow_html=True
@@ -1216,978 +1566,1369 @@ elif page == "Federated Learning Prediction":
         missing.append(SCALER_PATH.name)
 
     if missing:
-        st.error(
-            "Required Federated Learning file(s) not found: "
-            + ", ".join(missing)
+        st.warning(
+            "Employee performance model artifacts are missing. "
+            "Please open **Data Import & Model Training** and complete "
+            "Normal Employee training to generate the required files, then return here."
+        )
+        st.info(
+            "Expected artifacts: " + ", ".join(f"`{name}`" for name in missing)
         )
         st.stop()
 
-    federated_model = load_federated_model()
-    scaler = load_scaler()
+    try:
+        federated_model = load_federated_model()
+        scaler = load_scaler()
+    except Exception:
+        st.error(
+            "The employee performance model could not be loaded. "
+            "Please retrain from **Data Import & Model Training**, then try again."
+        )
+        st.stop()
 
     st.markdown(
-        '<div class="emp-section-title">Employee Feature Inputs</div>',
+        '<div class="emp-section-title">Employee Input Features</div>',
         unsafe_allow_html=True
     )
     st.markdown(
-        '<div class="emp-soft">Enter operational metrics to generate a federated neural network performance estimate.</div>',
+        '<div class="emp-soft">Provide the employee metrics below. Values are validated before prediction.</div>',
         unsafe_allow_html=True
     )
 
-    with st.form("federated_prediction_form"):
+    with st.form("employee_performance_prediction_form"):
+        g1, g2 = st.columns(2)
 
-        col1, col2 = st.columns(2)
-
-        with col1:
+        with g1:
+            st.markdown(
+                '<div class="emp-group-label">Attendance & Delivery</div>',
+                unsafe_allow_html=True
+            )
             fl_attendance = st.slider(
-                "Attendance Percentage", 0.0, 100.0, 90.0
+                "Attendance Percentage", 0.0, 100.0, 90.0,
+                help="Share of scheduled work days attended (0–100)."
             )
-
             fl_completion = st.slider(
-                "Task Completion Rate", 0.0, 100.0, 80.0
+                "Task Completion Rate", 0.0, 100.0, 80.0,
+                help="Percentage of assigned tasks completed (0–100)."
             )
-
             fl_quality = st.slider(
-                "Quality Score", 0.0, 100.0, 80.0
+                "Quality Score", 0.0, 100.0, 80.0,
+                help="Work quality assessment score (0–100)."
             )
-
-            fl_work_hours = st.number_input(
-                "Average Work Hours", 0.0, 24.0, 8.0
-            )
-
-        with col2:
-            fl_training = st.number_input(
-                "Training Hours", 0.0, 100.0, 5.0
-            )
-
-            fl_workload = st.slider(
-                "Workload Score", 0.0, 100.0, 50.0
-            )
-
             fl_tasks = st.number_input(
-                "Tasks Completed", 0, 1000, 40
+                "Tasks Completed", min_value=0, max_value=1000, value=40, step=1,
+                help="Count of tasks completed in the evaluation period."
             )
 
+        with g2:
+            st.markdown(
+                '<div class="emp-group-label">Capacity & Development</div>',
+                unsafe_allow_html=True
+            )
+            fl_work_hours = st.number_input(
+                "Average Work Hours", min_value=0.0, max_value=24.0, value=8.0, step=0.5,
+                help="Average daily work hours (0–24)."
+            )
+            fl_training = st.number_input(
+                "Training Hours", min_value=0.0, max_value=100.0, value=5.0, step=0.5,
+                help="Recent training hours completed (0–100)."
+            )
+            fl_workload = st.slider(
+                "Workload Score", 0.0, 100.0, 50.0,
+                help="Relative workload pressure score (0–100)."
+            )
             fl_experience = st.number_input(
-                "Experience Years", 0.0, 50.0, 3.0
+                "Experience Years", min_value=0.0, max_value=50.0, value=3.0, step=0.5,
+                help="Years of relevant experience (0–50)."
             )
 
-        fl_submit = st.form_submit_button("Generate Performance Insights")
+        fl_submit = st.form_submit_button(
+            "Predict Employee Performance",
+            type="primary",
+            use_container_width=True
+        )
 
     if fl_submit:
+        validation_errors = []
+        if not (0.0 <= fl_attendance <= 100.0):
+            validation_errors.append("Attendance Percentage must be between 0 and 100.")
+        if not (0.0 <= fl_completion <= 100.0):
+            validation_errors.append("Task Completion Rate must be between 0 and 100.")
+        if not (0.0 <= fl_quality <= 100.0):
+            validation_errors.append("Quality Score must be between 0 and 100.")
+        if not (0.0 <= fl_work_hours <= 24.0):
+            validation_errors.append("Average Work Hours must be between 0 and 24.")
+        if not (0.0 <= fl_training <= 100.0):
+            validation_errors.append("Training Hours must be between 0 and 100.")
+        if not (0.0 <= fl_workload <= 100.0):
+            validation_errors.append("Workload Score must be between 0 and 100.")
+        if fl_tasks < 0 or fl_tasks > 1000:
+            validation_errors.append("Tasks Completed must be between 0 and 1000.")
+        if not (0.0 <= fl_experience <= 50.0):
+            validation_errors.append("Experience Years must be between 0 and 50.")
 
-        values = {
-            "attendance_percentage": fl_attendance,
-            "task_completion_rate": fl_completion,
-            "quality_score": fl_quality,
-            "average_work_hours": fl_work_hours,
-            "training_hours": fl_training,
-            "workload_score": fl_workload,
-            "tasks_completed": fl_tasks,
-            "experience_years": fl_experience
-        }
+        if validation_errors:
+            for msg in validation_errors:
+                st.warning(msg)
+        else:
+            values = {
+                "attendance_percentage": float(fl_attendance),
+                "task_completion_rate": float(fl_completion),
+                "quality_score": float(fl_quality),
+                "average_work_hours": float(fl_work_hours),
+                "training_hours": float(fl_training),
+                "workload_score": float(fl_workload),
+                "tasks_completed": float(fl_tasks),
+                "experience_years": float(fl_experience)
+            }
 
-        fl_input = pd.DataFrame([values])[FEATURES]
-        fl_scaled = scaler.transform(fl_input)
-        fl_prediction = float(
-            federated_model.predict(fl_scaled, verbose=0)[0][0]
-        )
-        fl_prediction = float(np.clip(fl_prediction, 0, 100))
-        fl_category = get_performance_category(fl_prediction)
-        suggestions = generate_improvement_suggestions(values, fl_prediction)
-
-        kpi_col, badge_col, indicator_col = st.columns([1.2, 1, 1.2])
-
-        with kpi_col:
-            st.markdown(
-                f"""
-                <div class="emp-kpi">
-                    <div class="label">Predicted Performance Score</div>
-                    <div class="value">{fl_prediction:.1f}</div>
-                    <div class="unit">out of 100</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-        with badge_col:
-            st.markdown('<div class="emp-card">', unsafe_allow_html=True)
-            st.markdown(
-                '<div class="emp-section-title">Performance Category</div>',
-                unsafe_allow_html=True
-            )
-            st.markdown(
-                f'<span class="emp-badge {badge_class(fl_category)}">{fl_category}</span>',
-                unsafe_allow_html=True
-            )
-            st.caption(
-                "Category thresholds: Needs Support < 60, "
-                "Monitor 60-74.9, On Track >= 75"
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        with indicator_col:
-            st.markdown('<div class="emp-card">', unsafe_allow_html=True)
-            st.markdown(
-                '<div class="emp-section-title">Employee Performance Indicator</div>',
-                unsafe_allow_html=True
-            )
-            st.progress(min(max(fl_prediction / 100.0, 0.0), 1.0))
-            if fl_prediction >= 75:
-                indicator_text = "Strong projected performance trajectory"
-            elif fl_prediction >= 60:
-                indicator_text = "Stable with targeted improvement opportunity"
+            try:
+                fl_input = pd.DataFrame([values])[FEATURES]
+                fl_scaled = scaler.transform(fl_input)
+                fl_prediction = float(
+                    federated_model.predict(fl_scaled, verbose=0)[0][0]
+                )
+                fl_prediction = float(np.clip(fl_prediction, 0, 100))
+                fl_category = get_performance_category(fl_prediction)
+                suggestions = generate_improvement_suggestions(values, fl_prediction)
+            except Exception:
+                st.error(
+                    "Prediction could not be completed with the current inputs. "
+                    "Please verify the values and try again, or retrain the model "
+                    "from Data Import & Model Training if the issue continues."
+                )
             else:
-                indicator_text = "At-risk projection requiring focused support"
-            st.write(indicator_text)
-            st.markdown("</div>", unsafe_allow_html=True)
+                st.success(
+                    "Prediction complete. Review the predicted score, category, "
+                    "and personalized recommendations below."
+                )
 
-        chart_col1, chart_col2 = st.columns(2)
+                st.markdown(
+                    '<div class="emp-section-title emp-result-wrap">Prediction Results</div>',
+                    unsafe_allow_html=True
+                )
 
-        feature_chart_df = pd.DataFrame({
-            "Feature": [
-                "Attendance",
-                "Task Completion",
-                "Quality",
-                "Training Hours",
-                "Workload",
-                "Work Hours"
-            ],
-            "Value": [
-                fl_attendance,
-                fl_completion,
-                fl_quality,
-                min(fl_training * 5, 100),
-                fl_workload,
-                min(fl_work_hours * 10, 100)
-            ]
-        })
+                kpi_col, badge_col, indicator_col = st.columns([1.2, 1, 1.2])
 
-        with chart_col1:
-            fig = px.bar(
-                feature_chart_df,
-                x="Feature",
-                y="Value",
-                title="Input Profile (Normalized View)",
-                color="Value",
-                color_continuous_scale="Teal"
-            )
-            fig.update_layout(yaxis_title="Indexed Value", showlegend=False)
-            st.plotly_chart(fig, width="stretch")
+                with kpi_col:
+                    st.markdown(
+                        f"""
+                        <div class="emp-kpi">
+                            <div class="label">Predicted Performance Score</div>
+                            <div class="value">{fl_prediction:.1f}</div>
+                            <div class="unit">out of 100</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
-        with chart_col2:
-            radar_df = pd.DataFrame({
-                "Metric": [
-                    "Attendance",
-                    "Completion",
-                    "Quality",
-                    "Training",
-                    "Workload Control",
-                    "Hour Balance"
-                ],
-                "Score": [
-                    fl_attendance,
-                    fl_completion,
-                    fl_quality,
-                    min(fl_training * 10, 100),
-                    max(0, 100 - fl_workload),
-                    max(0, 100 - abs(fl_work_hours - 8) * 12)
-                ]
-            })
-            fig = go.Figure()
-            fig.add_trace(go.Scatterpolar(
-                r=radar_df["Score"].tolist() + [radar_df["Score"].iloc[0]],
-                theta=radar_df["Metric"].tolist() + [radar_df["Metric"].iloc[0]],
-                fill="toself",
-                name="Employee Profile",
-                line_color="#1a6b8a"
-            ))
-            fig.update_layout(
-                title="Capability Balance Radar",
-                polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-                showlegend=False
-            )
-            st.plotly_chart(fig, width="stretch")
+                with badge_col:
+                    st.markdown('<div class="emp-card">', unsafe_allow_html=True)
+                    st.markdown(
+                        '<div class="emp-section-title">Performance Category</div>',
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(
+                        f'<span class="emp-badge {badge_class(fl_category)}">{fl_category}</span>',
+                        unsafe_allow_html=True
+                    )
+                    st.caption(
+                        "Needs Support < 60 · Monitor 60–74.9 · On Track ≥ 75"
+                    )
+                    st.markdown("</div>", unsafe_allow_html=True)
 
+                with indicator_col:
+                    st.markdown('<div class="emp-card">', unsafe_allow_html=True)
+                    st.markdown(
+                        '<div class="emp-section-title">Performance Indicator</div>',
+                        unsafe_allow_html=True
+                    )
+                    st.progress(min(max(fl_prediction / 100.0, 0.0), 1.0))
+                    if fl_prediction >= 75:
+                        indicator_text = "Strong projected performance trajectory"
+                    elif fl_prediction >= 60:
+                        indicator_text = "Stable with targeted improvement opportunity"
+                    else:
+                        indicator_text = "At-risk projection requiring focused support"
+                    st.write(indicator_text)
+                    st.markdown("</div>", unsafe_allow_html=True)
+
+                st.markdown(
+                    '<div class="emp-section-title">Input Profile Charts</div>',
+                    unsafe_allow_html=True
+                )
+                chart_col1, chart_col2 = st.columns(2)
+
+                feature_chart_df = pd.DataFrame({
+                    "Feature": [
+                        "Attendance",
+                        "Task Completion",
+                        "Quality",
+                        "Training Hours",
+                        "Workload",
+                        "Work Hours"
+                    ],
+                    "Value": [
+                        fl_attendance,
+                        fl_completion,
+                        fl_quality,
+                        min(fl_training * 5, 100),
+                        fl_workload,
+                        min(fl_work_hours * 10, 100)
+                    ]
+                })
+
+                with chart_col1:
+                    fig = px.bar(
+                        feature_chart_df,
+                        x="Feature",
+                        y="Value",
+                        title="Input Profile (Normalized View)",
+                        color="Value",
+                        color_continuous_scale="Teal"
+                    )
+                    fig.update_layout(
+                        yaxis_title="Indexed Value",
+                        showlegend=False,
+                        margin=dict(l=20, r=20, t=50, b=20),
+                        height=360
+                    )
+                    st.plotly_chart(fig, width="stretch")
+
+                with chart_col2:
+                    radar_df = pd.DataFrame({
+                        "Metric": [
+                            "Attendance",
+                            "Completion",
+                            "Quality",
+                            "Training",
+                            "Workload Control",
+                            "Hour Balance"
+                        ],
+                        "Score": [
+                            fl_attendance,
+                            fl_completion,
+                            fl_quality,
+                            min(fl_training * 10, 100),
+                            max(0, 100 - fl_workload),
+                            max(0, 100 - abs(fl_work_hours - 8) * 12)
+                        ]
+                    })
+                    fig = go.Figure()
+                    fig.add_trace(go.Scatterpolar(
+                        r=radar_df["Score"].tolist() + [radar_df["Score"].iloc[0]],
+                        theta=radar_df["Metric"].tolist() + [radar_df["Metric"].iloc[0]],
+                        fill="toself",
+                        name="Employee Profile",
+                        line_color="#1a6b8a"
+                    ))
+                    fig.update_layout(
+                        title="Capability Balance Radar",
+                        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                        showlegend=False,
+                        margin=dict(l=40, r=40, t=50, b=20),
+                        height=360
+                    )
+                    st.plotly_chart(fig, width="stretch")
+
+                st.markdown(
+                    '<div class="emp-section-title">Personalized Recommendations</div>',
+                    unsafe_allow_html=True
+                )
+                if suggestions["personalized"]:
+                    for item in suggestions["personalized"]:
+                        st.markdown(
+                            f'<div class="suggestion-item">{item}</div>',
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.info(
+                        "No high-priority risk factors were detected. "
+                        "Continue reinforcing current strengths."
+                    )
+
+                sug_c1, sug_c2 = st.columns(2)
+                with sug_c1:
+                    st.markdown(
+                        '<div class="emp-section-title">Training Recommendations</div>',
+                        unsafe_allow_html=True
+                    )
+                    for item in suggestions["training"]:
+                        st.markdown(
+                            f'<div class="suggestion-item">{item}</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    st.markdown(
+                        '<div class="emp-section-title">Attendance Suggestions</div>',
+                        unsafe_allow_html=True
+                    )
+                    for item in suggestions["attendance"]:
+                        st.markdown(
+                            f'<div class="suggestion-item">{item}</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    st.markdown(
+                        '<div class="emp-section-title">Productivity Suggestions</div>',
+                        unsafe_allow_html=True
+                    )
+                    for item in suggestions["productivity"]:
+                        st.markdown(
+                            f'<div class="suggestion-item">{item}</div>',
+                            unsafe_allow_html=True
+                        )
+
+                with sug_c2:
+                    st.markdown(
+                        '<div class="emp-section-title">Quality Suggestions</div>',
+                        unsafe_allow_html=True
+                    )
+                    for item in suggestions["quality"]:
+                        st.markdown(
+                            f'<div class="suggestion-item">{item}</div>',
+                            unsafe_allow_html=True
+                        )
+
+                    st.markdown(
+                        '<div class="emp-section-title">Workload Balance Suggestions</div>',
+                        unsafe_allow_html=True
+                    )
+                    for item in suggestions["workload"]:
+                        st.markdown(
+                            f'<div class="suggestion-item">{item}</div>',
+                            unsafe_allow_html=True
+                        )
+
+# =================================================
+# 5. FIELD SALES PERFORMANCE PREDICTION
+# =================================================
+elif page == "Field Sales Performance Prediction":
+
+    st.markdown(
+        """
+        <div class="emp-hero">
+            <h2>Field Sales Performance Prediction</h2>
+            <p>Dedicated ML intelligence for territory sales reps, conversion forecasting, and KPI coaching</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    fs_model = load_field_sales_model()
+    fs_scaler = load_field_sales_preprocessor()
+
+    if fs_model is None or fs_scaler is None:
+        st.warning(
+            "Field Sales model has not been trained yet. "
+            "Please go to **Data Import & Model Training** -> **Field Sales Data Import & Training** tab "
+            "to import field sales records and train the dedicated model."
+        )
+    else:
         st.markdown(
-            '<div class="emp-section-title">Personalized Employee Improvement Suggestions</div>',
+            '<div class="emp-section-title">Sales Representative Operational Inputs</div>',
             unsafe_allow_html=True
         )
-        for item in suggestions["personalized"]:
-            st.markdown(
-                f'<div class="suggestion-item">{item}</div>',
-                unsafe_allow_html=True
-            )
+        st.markdown(
+            '<div class="emp-soft">Enter field sales performance parameters to predict overall performance score and status.</div>',
+            unsafe_allow_html=True
+        )
 
-        sug_c1, sug_c2 = st.columns(2)
-        with sug_c1:
-            st.markdown(
-                '<div class="emp-section-title">Training Recommendations</div>',
-                unsafe_allow_html=True
-            )
-            for item in suggestions["training"]:
+        with st.form("field_sales_prediction_form"):
+            fcol1, fcol2 = st.columns(2)
+
+            with fcol1:
+                fs_emp_id = st.text_input("Employee ID", value="FS1001")
+                fs_experience = st.number_input("Experience (Years)", min_value=0.0, max_value=45.0, value=3.5, step=0.5)
+                fs_travel_km = st.number_input("Total Travel KM", min_value=0.0, max_value=25000.0, value=850.0, step=25.0)
+                fs_clients = st.number_input("Clients Visited", min_value=0, max_value=2000, value=65, step=1)
+                fs_leads = st.number_input("Leads Generated", min_value=0, max_value=2000, value=48, step=1)
+
+            with fcol2:
+                fs_orders = st.number_input("Orders Closed", min_value=0, max_value=2000, value=22, step=1)
+                fs_sales_target = st.number_input("Sales Target ($)", min_value=1000.0, max_value=5000000.0, value=250000.0, step=5000.0)
+                fs_revenue = st.number_input("Sales Revenue ($)", min_value=0.0, max_value=10000000.0, value=242000.0, step=5000.0)
+                fs_followups = st.number_input("Follow-ups Completed", min_value=0, max_value=5000, value=95, step=1)
+
+            fs_submit = st.form_submit_button("Predict Field Sales Performance", type="primary")
+
+        if fs_submit:
+            calc_conv_rate = (fs_orders / fs_leads * 100.0) if fs_leads > 0 else 0.0
+            calc_target_ach = (fs_revenue / fs_sales_target * 100.0) if fs_sales_target > 0 else 0.0
+
+            fs_input_dict = {
+                "total_travel_km": float(fs_travel_km),
+                "clients_visited": int(fs_clients),
+                "leads_generated": int(fs_leads),
+                "orders_closed": int(fs_orders),
+                "sales_revenue": float(fs_revenue),
+                "followups_completed": int(fs_followups),
+                "experience_years": float(fs_experience),
+                "conversion_rate": float(calc_conv_rate),
+                "target_achievement_percentage": float(calc_target_ach),
+                "sales_target": float(fs_sales_target)
+            }
+
+            fs_features_df = pd.DataFrame([fs_input_dict])[FIELD_SALES_FEATURES]
+
+            try:
+                fs_scaled = fs_scaler.transform(fs_features_df)
+                raw_prediction = float(fs_model.predict(fs_scaled)[0])
+                predicted_score = float(np.clip(raw_prediction, 0.0, 100.0))
+                category = get_performance_category(predicted_score)
+                recs = generate_field_sales_recommendations(fs_input_dict, predicted_score)
+
+                st.markdown("### Prediction Results")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Predicted Score", f"{predicted_score:.1f} / 100")
+                m2.metric("Performance Status", category)
+                m3.metric("Calculated Conversion Rate", f"{calc_conv_rate:.1f}%")
+                m4.metric("Target Achievement", f"{calc_target_ach:.1f}%")
+
+                badge_map = {
+                    "On Track": ("#e6f7ec", "#1e7e34", "badge-on-track"),
+                    "Monitor": ("#fff8e1", "#b78103", "badge-monitor"),
+                    "Needs Support": ("#fde8e8", "#c81e1e", "badge-needs-support")
+                }
+                bg, fg, bcls = badge_map.get(category, ("#f8fafc", "#243b53", "badge-monitor"))
+
                 st.markdown(
-                    f'<div class="suggestion-item">{item}</div>',
+                    f"""
+                    <div style="background-color: {bg}; border: 1px solid {fg}; border-radius: 8px; padding: 1rem; margin: 1rem 0;">
+                        <h4 style="color: {fg}; margin: 0 0 0.5rem 0;">Field Sales Assessment: {category}</h4>
+                        <p style="margin: 0; color: #333;">Employee <strong>{fs_emp_id}</strong> is assessed at <strong>{predicted_score:.1f}</strong> score based on territory sales performance, deal closing ratio, and pipeline velocity.</p>
+                    </div>
+                    """,
                     unsafe_allow_html=True
                 )
 
-            st.markdown(
-                '<div class="emp-section-title">Attendance Improvement Suggestions</div>',
-                unsafe_allow_html=True
-            )
-            for item in suggestions["attendance"]:
-                st.markdown(
-                    f'<div class="suggestion-item">{item}</div>',
-                    unsafe_allow_html=True
+                st.markdown("#### Key Evaluation Ratios")
+                kpi_chart_df = pd.DataFrame({
+                    "Metric": ["Target Achievement (%)", "Conversion Rate (%)", "Predicted Score"],
+                    "Value": [min(calc_target_ach, 150.0), min(calc_conv_rate, 100.0), predicted_score]
+                })
+                fig_kpi = px.bar(
+                    kpi_chart_df,
+                    x="Metric",
+                    y="Value",
+                    color="Metric",
+                    title="Key Evaluation Ratios",
+                    text_auto=".1f"
                 )
+                st.plotly_chart(fig_kpi, width="stretch")
 
-            st.markdown(
-                '<div class="emp-section-title">Productivity Improvement Suggestions</div>',
-                unsafe_allow_html=True
-            )
-            for item in suggestions["productivity"]:
-                st.markdown(
-                    f'<div class="suggestion-item">{item}</div>',
-                    unsafe_allow_html=True
-                )
+                st.markdown("### Actionable Sales Coaching & Recommendations")
+                for r in recs:
+                    st.info("💼 " + r)
 
-        with sug_c2:
-            st.markdown(
-                '<div class="emp-section-title">Quality Improvement Suggestions</div>',
-                unsafe_allow_html=True
-            )
-            for item in suggestions["quality"]:
-                st.markdown(
-                    f'<div class="suggestion-item">{item}</div>',
-                    unsafe_allow_html=True
-                )
-
-            st.markdown(
-                '<div class="emp-section-title">Workload Balance Suggestions</div>',
-                unsafe_allow_html=True
-            )
-            for item in suggestions["workload"]:
-                st.markdown(
-                    f'<div class="suggestion-item">{item}</div>',
-                    unsafe_allow_html=True
-                )
+            except Exception as exc:
+                st.error(f"Prediction failed: {exc}")
 
 # =================================================
-# 5c. MODEL COMPARISON
+# 6. TRAINING HISTORY
 # =================================================
-elif page == "Model Comparison":
+elif page == "Training History":
 
-    st.header("Model Comparison")
-    st.info(
-        "Federated Learning in this project is simulated across department "
-        "partitions using FedAvg. Each department acts as a client; local "
-        "updates are averaged into a global neural network."
-    )
+    st.header("Training History")
+    hist_tab1, hist_tab2 = st.tabs(["Federated Training History", "Field Sales Training History"])
 
-    missing = []
-    if not MODEL_PATH.exists():
-        missing.append(MODEL_PATH.name)
-    if not FEDERATED_MODEL_PATH.exists():
-        missing.append(FEDERATED_MODEL_PATH.name)
-    if not SCALER_PATH.exists():
-        missing.append(SCALER_PATH.name)
+    with hist_tab1:
+        if not FEDERATED_HISTORY_PATH.exists():
+            st.error(
+                f"Training history file not found: {FEDERATED_HISTORY_PATH.name}"
+            )
+        else:
+            history_df = load_federated_history()
 
-    if missing:
-        st.error(
-            "Required model file(s) not found: " + ", ".join(missing)
-        )
-        st.stop()
+            st.subheader("Training Rounds")
+            st.dataframe(history_df, width="stretch", hide_index=True)
 
-    rf_model = load_model()
-    federated_model = load_federated_model()
-    scaler = load_scaler()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Rounds", len(history_df))
+            c2.metric("Final MAE", round(float(history_df["mae"].iloc[-1]), 2))
+            c3.metric("Final Loss", round(float(history_df["loss"].iloc[-1]), 2))
 
-    X = df[FEATURES]
-    y = df["performance_score"]
+            fig = px.line(
+                history_df,
+                x="round",
+                y="mae",
+                markers=True,
+                title="Federated Training MAE Across Rounds"
+            )
+            st.plotly_chart(fig, width="stretch")
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+            fig = px.line(
+                history_df,
+                x="round",
+                y="loss",
+                markers=True,
+                title="Federated Training Loss Across Rounds"
+            )
+            st.plotly_chart(fig, width="stretch")
 
-    rf_pred = rf_model.predict(X_test)
-    fl_pred = federated_model.predict(
-        scaler.transform(X_test), verbose=0
-    ).ravel()
+    with hist_tab2:
+        st.subheader("Field Sales Model Training Runs")
+        fs_hist_df = load_field_sales_history()
+        if fs_hist_df is None or fs_hist_df.empty:
+            st.info("No Field Sales training history recorded yet. Train the model to see evaluation metrics.")
+        else:
+            st.dataframe(fs_hist_df, width="stretch", hide_index=True)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Retraining Runs", len(fs_hist_df))
+            c2.metric("Latest MAE", round(float(fs_hist_df["mae"].iloc[-1]), 4))
+            c3.metric("Latest R2", round(float(fs_hist_df["r2"].iloc[-1]), 4))
 
-    comparison_df = pd.DataFrame({
-        "Model": ["Random Forest", "Federated Neural Network"],
-        "MAE": [
-            mean_absolute_error(y_test, rf_pred),
-            mean_absolute_error(y_test, fl_pred),
-        ],
-        "RMSE": [
-            np.sqrt(mean_squared_error(y_test, rf_pred)),
-            np.sqrt(mean_squared_error(y_test, fl_pred)),
-        ],
-        "R2": [
-            r2_score(y_test, rf_pred),
-            r2_score(y_test, fl_pred),
-        ],
-    })
-
-    comparison_display = comparison_df.copy()
-    comparison_display["MAE"] = comparison_display["MAE"].round(2)
-    comparison_display["RMSE"] = comparison_display["RMSE"].round(2)
-    comparison_display["R2"] = comparison_display["R2"].round(3)
-
-    st.subheader("Metrics Comparison")
-    st.dataframe(comparison_display, width="stretch", hide_index=True)
-
-    best_idx = comparison_df["MAE"].idxmin()
-    best_model = comparison_df.loc[best_idx, "Model"]
-    best_mae = comparison_df.loc[best_idx, "MAE"]
-    st.success(
-        f"Best model by test MAE: {best_model} "
-        f"(MAE = {best_mae:.2f})"
-    )
-
-    metrics_long = comparison_df.melt(
-        id_vars="Model",
-        value_vars=["MAE", "RMSE", "R2"],
-        var_name="Metric",
-        value_name="Value"
-    )
-
-    fig = px.bar(
-        metrics_long,
-        x="Metric",
-        y="Value",
-        color="Model",
-        barmode="group",
-        title="MAE, RMSE, and R2 by Model"
-    )
-    st.plotly_chart(fig, width="stretch")
-
-    pred_compare = pd.DataFrame({
-        "Actual": y_test.values,
-        "Random Forest": rf_pred,
-        "Federated Neural Network": fl_pred,
-    })
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        fig = px.scatter(
-            pred_compare,
-            x="Actual",
-            y="Random Forest",
-            title="Random Forest: Actual vs Predicted"
-        )
-        fig.add_shape(
-            type="line",
-            x0=pred_compare["Actual"].min(),
-            y0=pred_compare["Actual"].min(),
-            x1=pred_compare["Actual"].max(),
-            y1=pred_compare["Actual"].max(),
-            line=dict(dash="dash", color="gray")
-        )
-        st.plotly_chart(fig, width="stretch")
-
-    with col2:
-        fig = px.scatter(
-            pred_compare,
-            x="Actual",
-            y="Federated Neural Network",
-            title="Federated NN: Actual vs Predicted"
-        )
-        fig.add_shape(
-            type="line",
-            x0=pred_compare["Actual"].min(),
-            y0=pred_compare["Actual"].min(),
-            x1=pred_compare["Actual"].max(),
-            y1=pred_compare["Actual"].max(),
-            line=dict(dash="dash", color="gray")
-        )
-        st.plotly_chart(fig, width="stretch")
-
-# =================================================
-# 5d. FEDERATED TRAINING HISTORY
-# =================================================
-elif page == "Federated Training History":
-
-    st.header("Federated Training History")
-
-    if not FEDERATED_HISTORY_PATH.exists():
-        st.error(
-            f"Training history file not found: {FEDERATED_HISTORY_PATH.name}"
-        )
-        st.stop()
-
-    history_df = load_federated_history()
-
-    st.subheader("Training Rounds")
-    st.dataframe(history_df, width="stretch", hide_index=True)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Rounds", len(history_df))
-    c2.metric("Final MAE", round(float(history_df["mae"].iloc[-1]), 2))
-    c3.metric("Final Loss", round(float(history_df["loss"].iloc[-1]), 2))
-
-    fig = px.line(
-        history_df,
-        x="round",
-        y="mae",
-        markers=True,
-        title="Federated Training MAE Across Rounds"
-    )
-    st.plotly_chart(fig, width="stretch")
-
-    fig = px.line(
-        history_df,
-        x="round",
-        y="loss",
-        markers=True,
-        title="Federated Training Loss Across Rounds"
-    )
-    st.plotly_chart(fig, width="stretch")
+            if len(fs_hist_df) > 1:
+                fig_h = px.line(
+                    fs_hist_df,
+                    x="training_timestamp",
+                    y=["mae", "rmse"],
+                    markers=True,
+                    title="Field Sales Model Error Trends"
+                )
+                st.plotly_chart(fig_h, width="stretch")
 
 # =================================================
 # 5e. DATA IMPORT & MODEL TRAINING
+# =================================================
+# =================================================
+# 7. DATA IMPORT & MODEL TRAINING
 # =================================================
 elif page == "Data Import & Model Training":
 
     st.header("Data Import & Model Training")
     st.caption(
-        "Upload employee CSV data, manage the master dataset, and retrain "
-        "Random Forest plus Federated Learning models safely."
+        "Upload employee or Field Sales CSV data, manage master datasets, and train "
+        "dedicated models safely with isolated schemas."
     )
 
-    meta_c1, meta_c2, meta_c3 = st.columns(3)
-    meta_c1.metric("Active Dataset", active_data_path.name)
-    meta_c2.metric("Dataset Size", len(df))
-    meta_c3.metric(
-        "Latest Training",
-        training_meta.get("last_trained_at", "Not trained yet")
-    )
+    import_tab1, import_tab2 = st.tabs([
+        "Normal Employee Data Import & Training",
+        "Field Sales Data Import & Training"
+    ])
 
-    st.subheader("1) CSV Data Import Center")
-    uploaded = st.file_uploader(
-        "Upload employee performance CSV",
-        type=["csv"],
-        help="Drag and drop a CSV file with the required employee columns."
-    )
-
-    if uploaded is not None:
-        try:
-            uploaded_df = pd.read_csv(uploaded)
-        except Exception as exc:
-            st.error(f"Unable to read CSV: {exc}")
-            st.stop()
-
-        st.write(
-            f"Uploaded file preview | Rows: {uploaded_df.shape[0]} | "
-            f"Columns: {uploaded_df.shape[1]}"
+    with import_tab1:
+        st.subheader("Normal Employee Workflow")
+        meta_c1, meta_c2, meta_c3 = st.columns(3)
+        meta_c1.metric("Active Dataset", active_data_path.name)
+        meta_c2.metric("Dataset Size", len(df))
+        meta_c3.metric(
+            "Latest Training",
+            training_meta.get("last_trained_at", "Not trained yet")
         )
-        st.dataframe(uploaded_df.head(20), width="stretch")
-
-        validation = validate_employee_dataframe(uploaded_df)
-
-        v1, v2, v3, v4 = st.columns(4)
-        v1.metric("Rows", validation["rows"])
-        v2.metric("Columns", validation["columns"])
-        v3.metric("Duplicate Rows", validation["duplicate_rows"])
-        v4.metric("Duplicate IDs", validation["duplicate_employee_ids"])
-
-        if validation["missing_columns"]:
-            st.error(
-                "Missing required columns: "
-                + ", ".join(validation["missing_columns"])
+    
+        st.subheader("1) CSV Data Import Center")
+        uploaded = st.file_uploader(
+            "Upload employee performance CSV",
+            type=["csv"],
+            help="Drag and drop a CSV file with the required employee columns."
+        )
+    
+        if uploaded is not None:
+            try:
+                uploaded_df = pd.read_csv(uploaded)
+            except Exception as exc:
+                st.error(f"Unable to read CSV: {exc}")
+                st.stop()
+    
+            st.write(
+                f"Uploaded file preview | Rows: {uploaded_df.shape[0]} | "
+                f"Columns: {uploaded_df.shape[1]}"
             )
-        if validation["missing_values"]:
-            st.error("Missing values detected:")
-            st.json(validation["missing_values"])
-        for warning in validation["warnings"]:
-            st.warning(warning)
-        for error in validation["errors"]:
-            if "Missing required columns" not in error and "Missing values" not in error:
-                st.error(error)
-
-        if validation["ok"]:
-            st.success("CSV validation passed.")
-            st.subheader("Dataset Statistics")
-            st.dataframe(
-                uploaded_df[NUMERIC_COLUMNS].describe().T,
-                width="stretch"
+            st.dataframe(uploaded_df.head(20), width="stretch")
+    
+            validation = validate_employee_dataframe(uploaded_df)
+    
+            v1, v2, v3, v4 = st.columns(4)
+            v1.metric("Rows", validation["rows"])
+            v2.metric("Columns", validation["columns"])
+            v3.metric("Duplicate Rows", validation["duplicate_rows"])
+            v4.metric("Duplicate IDs", validation["duplicate_employee_ids"])
+    
+            if validation["missing_columns"]:
+                st.error(
+                    "Missing required columns: "
+                    + ", ".join(validation["missing_columns"])
+                )
+            if validation["missing_values"]:
+                st.error("Missing values detected:")
+                st.json(validation["missing_values"])
+            for warning in validation["warnings"]:
+                st.warning(warning)
+            for error in validation["errors"]:
+                if "Missing required columns" not in error and "Missing values" not in error:
+                    st.error(error)
+    
+            if validation["ok"]:
+                st.success("CSV validation passed.")
+                st.subheader("Dataset Statistics")
+                st.dataframe(
+                    uploaded_df[NUMERIC_COLUMNS].describe().T,
+                    width="stretch"
+                )
+    
+                mode = st.radio(
+                    "How should this CSV update the master dataset?",
+                    ["Append to master dataset", "Replace master dataset"],
+                    horizontal=True
+                )
+    
+                current_master = (
+                    pd.read_csv(MASTER_DATA_PATH)
+                    if MASTER_DATA_PATH.exists()
+                    else df.copy()
+                )
+    
+                st.download_button(
+                    "Download safety backup of current working dataset",
+                    data=current_master.to_csv(index=False).encode("utf-8"),
+                    file_name="employee_dataset_backup.csv",
+                    mime="text/csv"
+                )
+    
+                if st.button("Apply Dataset Update", type="primary"):
+                    try:
+                        backup_path = backup_dataset(
+                            current_master, "pre_import_backup"
+                        )
+                        incoming = uploaded_df[REQUIRED_COLUMNS].copy()
+    
+                        if mode.startswith("Append"):
+                            combined = pd.concat(
+                                [current_master[REQUIRED_COLUMNS], incoming],
+                                ignore_index=True
+                            )
+                            combined = combined.drop_duplicates()
+                            combined = combined.drop_duplicates(
+                                subset=["employee_id"], keep="last"
+                            )
+                            action = "append"
+                        else:
+                            combined = incoming.drop_duplicates()
+                            combined = combined.drop_duplicates(
+                                subset=["employee_id"], keep="last"
+                            )
+                            action = "replace"
+    
+                        atomic_dataframe_to_csv(combined, MASTER_DATA_PATH)
+                        clear_model_caches()
+                        st.success(
+                            f"Master dataset updated via {action}. "
+                            f"Saved to `{MASTER_DATA_PATH.name}` "
+                            f"({len(combined)} rows). "
+                            f"Original `{DATA_PATH.name}` was not modified. "
+                            f"Backup: `{backup_path.name}`."
+                        )
+                        st.info(
+                            "CSV import does not train models. "
+                            "Use Train / Update Models below when ready."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Dataset update failed: {exc}")
+    
+                st.download_button(
+                    "Download imported CSV",
+                    data=uploaded_df.to_csv(index=False).encode("utf-8"),
+                    file_name="imported_employee_data.csv",
+                    mime="text/csv",
+                    key="download_imported_csv"
+                )
+            else:
+                st.error(
+                    "Validation failed. Fix the CSV issues before updating "
+                    "the master dataset."
+                )
+    
+        st.divider()
+        st.subheader("2) Master Dataset Management")
+    
+        master_exists = MASTER_DATA_PATH.exists()
+        master_df = pd.read_csv(MASTER_DATA_PATH) if master_exists else None
+    
+        m1, m2 = st.columns(2)
+        with m1:
+            st.write(
+                f"Master dataset present: {'Yes' if master_exists else 'No'}"
             )
-
-            mode = st.radio(
-                "How should this CSV update the master dataset?",
-                ["Append to master dataset", "Replace master dataset"],
-                horizontal=True
-            )
-
-            current_master = (
-                pd.read_csv(MASTER_DATA_PATH)
-                if MASTER_DATA_PATH.exists()
-                else df.copy()
-            )
-
-            st.download_button(
-                "Download safety backup of current working dataset",
-                data=current_master.to_csv(index=False).encode("utf-8"),
-                file_name="employee_dataset_backup.csv",
-                mime="text/csv"
-            )
-
-            if st.button("Apply Dataset Update", type="primary"):
+            if master_exists:
+                st.write(f"Master rows: {len(master_df)}")
+                st.dataframe(master_df.head(10), width="stretch")
+                st.download_button(
+                    "Download master dataset",
+                    data=master_df.to_csv(index=False).encode("utf-8"),
+                    file_name="employee_performance_master.csv",
+                    mime="text/csv",
+                    key="download_master_csv"
+                )
+            else:
+                st.info(
+                    "No master dataset yet. Upload and apply a CSV to create "
+                    "`employee_performance_master.csv`."
+                )
+    
+        with m2:
+            st.write(f"Original dataset: `{DATA_PATH.name}` (read-only)")
+            st.write(f"Original rows: {len(pd.read_csv(DATA_PATH))}")
+            if st.button("Initialize master from original dataset"):
                 try:
-                    backup_path = backup_dataset(
-                        current_master, "pre_import_backup"
-                    )
-                    incoming = uploaded_df[REQUIRED_COLUMNS].copy()
-
-                    if mode.startswith("Append"):
-                        combined = pd.concat(
-                            [current_master[REQUIRED_COLUMNS], incoming],
-                            ignore_index=True
-                        )
-                        combined = combined.drop_duplicates()
-                        combined = combined.drop_duplicates(
-                            subset=["employee_id"], keep="last"
-                        )
-                        action = "append"
-                    else:
-                        combined = incoming.drop_duplicates()
-                        combined = combined.drop_duplicates(
-                            subset=["employee_id"], keep="last"
-                        )
-                        action = "replace"
-
-                    atomic_dataframe_to_csv(combined, MASTER_DATA_PATH)
+                    original_df = pd.read_csv(DATA_PATH)
+                    atomic_dataframe_to_csv(original_df, MASTER_DATA_PATH)
                     clear_model_caches()
                     st.success(
-                        f"Master dataset updated via {action}. "
-                        f"Saved to `{MASTER_DATA_PATH.name}` "
-                        f"({len(combined)} rows). "
-                        f"Original `{DATA_PATH.name}` was not modified. "
-                        f"Backup: `{backup_path.name}`."
-                    )
-                    st.info(
-                        "CSV import does not train models. "
-                        "Use Train / Update Models below when ready."
+                        "Master dataset initialized from original CSV. "
+                        "Original file remains unchanged."
                     )
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Dataset update failed: {exc}")
-
-            st.download_button(
-                "Download imported CSV",
-                data=uploaded_df.to_csv(index=False).encode("utf-8"),
-                file_name="imported_employee_data.csv",
-                mime="text/csv",
-                key="download_imported_csv"
-            )
-        else:
-            st.error(
-                "Validation failed. Fix the CSV issues before updating "
-                "the master dataset."
-            )
-
-    st.divider()
-    st.subheader("2) Master Dataset Management")
-
-    master_exists = MASTER_DATA_PATH.exists()
-    master_df = pd.read_csv(MASTER_DATA_PATH) if master_exists else None
-
-    m1, m2 = st.columns(2)
-    with m1:
-        st.write(
-            f"Master dataset present: {'Yes' if master_exists else 'No'}"
+                    st.error(f"Initialization failed: {exc}")
+    
+        st.divider()
+        st.subheader("3) Train / Update Models")
+        st.warning(
+            "Training will create backups of current models first. "
+            "If training fails, existing models are preserved."
         )
-        if master_exists:
-            st.write(f"Master rows: {len(master_df)}")
-            st.dataframe(master_df.head(10), width="stretch")
-            st.download_button(
-                "Download master dataset",
-                data=master_df.to_csv(index=False).encode("utf-8"),
-                file_name="employee_performance_master.csv",
-                mime="text/csv",
-                key="download_master_csv"
+    
+        train_source = (
+            MASTER_DATA_PATH if MASTER_DATA_PATH.exists() else active_data_path
+        )
+        st.caption(f"Training source: `{train_source.name}`")
+    
+        cfg1, cfg2, cfg3, cfg4 = st.columns(4)
+        with cfg1:
+            fl_rounds = st.number_input(
+                "Federated rounds", min_value=1, max_value=50, value=8, step=1
             )
-        else:
-            st.info(
-                "No master dataset yet. Upload and apply a CSV to create "
-                "`employee_performance_master.csv`."
+        with cfg2:
+            local_epochs = st.number_input(
+                "Local epochs per round", min_value=1, max_value=20, value=8, step=1
             )
-
-    with m2:
-        st.write(f"Original dataset: `{DATA_PATH.name}` (read-only)")
-        st.write(f"Original rows: {len(pd.read_csv(DATA_PATH))}")
-        if st.button("Initialize master from original dataset"):
+        with cfg3:
+            fl_learning_rate = st.number_input(
+                "FL learning rate",
+                min_value=0.0001,
+                max_value=0.05,
+                value=0.005,
+                step=0.001,
+                format="%.4f"
+            )
+        with cfg4:
+            test_size = st.selectbox("Test size", options=[0.2, 0.25, 0.3], index=0)
+    
+        if st.button("Train / Update Models", type="primary"):
+            progress = st.progress(0)
+            status = st.empty()
+    
             try:
-                original_df = pd.read_csv(DATA_PATH)
-                atomic_dataframe_to_csv(original_df, MASTER_DATA_PATH)
-                clear_model_caches()
-                st.success(
-                    "Master dataset initialized from original CSV. "
-                    "Original file remains unchanged."
-                )
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Initialization failed: {exc}")
-
-    st.divider()
-    st.subheader("3) Train / Update Models")
-    st.warning(
-        "Training will create backups of current models first. "
-        "If training fails, existing models are preserved."
-    )
-
-    train_source = (
-        MASTER_DATA_PATH if MASTER_DATA_PATH.exists() else active_data_path
-    )
-    st.caption(f"Training source: `{train_source.name}`")
-
-    cfg1, cfg2, cfg3, cfg4 = st.columns(4)
-    with cfg1:
-        fl_rounds = st.number_input(
-            "Federated rounds", min_value=1, max_value=50, value=8, step=1
-        )
-    with cfg2:
-        local_epochs = st.number_input(
-            "Local epochs per round", min_value=1, max_value=20, value=8, step=1
-        )
-    with cfg3:
-        fl_learning_rate = st.number_input(
-            "FL learning rate",
-            min_value=0.0001,
-            max_value=0.05,
-            value=0.005,
-            step=0.001,
-            format="%.4f"
-        )
-    with cfg4:
-        test_size = st.selectbox("Test size", options=[0.2, 0.25, 0.3], index=0)
-
-    if st.button("Train / Update Models", type="primary"):
-        progress = st.progress(0)
-        status = st.empty()
-
-        try:
-            status.info("Validating training dataset...")
-            train_df_raw = pd.read_csv(train_source)
-            validation = validate_employee_dataframe(train_df_raw)
-            if not validation["ok"]:
-                raise ValueError(
-                    "Training dataset validation failed: "
-                    + " | ".join(validation["errors"])
-                )
-
-            train_df = prepare_training_frame(train_df_raw)
-            progress.progress(8)
-
-            X = train_df[FEATURES]
-            y = train_df["performance_score"]
-            departments = train_df["department"].astype(str)
-
-            X_train, X_test, y_train, y_test, dept_train, _dept_test = (
-                train_test_split(
-                    X,
-                    y,
-                    departments,
-                    test_size=float(test_size),
-                    random_state=42
-                )
-            )
-
-            st.write("Target diagnostics (train split)")
-            st.json({
-                "min": float(np.min(y_train)),
-                "max": float(np.max(y_train)),
-                "mean": float(np.mean(y_train)),
-                "std": float(np.std(y_train))
-            })
-
-            # Capture before metrics from currently deployed models
-            before_metrics = {"Random Forest": None, "Federated Neural Network": None}
-            status.info("Evaluating current models (before)...")
-            try:
-                if MODEL_PATH.exists():
-                    current_rf = joblib.load(MODEL_PATH)
-                    before_metrics["Random Forest"] = evaluate_regression(
-                        y_test, current_rf.predict(X_test)
+                status.info("Validating training dataset...")
+                train_df_raw = pd.read_csv(train_source)
+                validation = validate_employee_dataframe(train_df_raw)
+                if not validation["ok"]:
+                    raise ValueError(
+                        "Training dataset validation failed: "
+                        + " | ".join(validation["errors"])
                     )
-                if FEDERATED_MODEL_PATH.exists() and SCALER_PATH.exists():
-                    from tensorflow import keras
-                    current_fl = keras.models.load_model(FEDERATED_MODEL_PATH)
-                    current_scaler = joblib.load(SCALER_PATH)
-                    before_pred = current_fl.predict(
-                        current_scaler.transform(X_test), verbose=0
-                    ).ravel()
-                    before_metrics["Federated Neural Network"] = (
-                        evaluate_regression(y_test, before_pred)
+    
+                train_df = prepare_training_frame(train_df_raw)
+                progress.progress(8)
+    
+                X = train_df[FEATURES]
+                y = train_df["performance_score"]
+                departments = train_df["department"].astype(str)
+    
+                X_train, X_test, y_train, y_test, dept_train, _dept_test = (
+                    train_test_split(
+                        X,
+                        y,
+                        departments,
+                        test_size=float(test_size),
+                        random_state=42
                     )
-            except Exception:
-                pass
-
-            progress.progress(15)
-            status.info("Creating model backups...")
-            backup_path = backup_existing_artifacts("pre_retrain")
-
-            status.info("Training Random Forest...")
-            rf_model, rf_metrics, _rf_pred = train_random_forest(
-                X_train, y_train, X_test, y_test
-            )
-            progress.progress(40)
-
-            def fl_progress(round_idx, total_rounds, loss_value, mae_value):
-                pct = 40 + int(50 * (round_idx / total_rounds))
-                progress.progress(min(pct, 90))
-                status.info(
-                    f"Federated round {round_idx}/{total_rounds} | "
-                    f"loss={loss_value:.4f} | mae={mae_value:.4f}"
                 )
-
-            status.info(
-                "Training Federated Neural Network with department-wise FedAvg..."
-            )
-            (
-                fl_model,
-                fl_scaler,
-                fl_metrics,
-                history_df,
-                fl_diagnostics
-            ) = train_federated_model(
-                X_train,
-                y_train,
-                dept_train,
-                X_test,
-                y_test,
-                rounds=int(fl_rounds),
-                local_epochs=int(local_epochs),
-                learning_rate=float(fl_learning_rate),
-                progress_callback=fl_progress
-            )
-
-            # Honest baseline comparison on the same untouched test split
-            mean_baseline_pred = np.full(
-                shape=len(y_test),
-                fill_value=float(np.mean(y_train)),
-                dtype=float
-            )
-            mean_metrics = evaluate_regression(y_test, mean_baseline_pred)
-            fl_test_pred = fl_model.predict(
-                fl_scaler.transform(pd.DataFrame(X_test, columns=FEATURES)),
-                verbose=0
-            ).ravel()
-
-            status.info("Saving updated artifacts atomically...")
-            atomic_joblib_dump(rf_model, MODEL_PATH)
-            atomic_keras_save(fl_model, FEDERATED_MODEL_PATH)
-            atomic_joblib_dump(fl_scaler, SCALER_PATH)
-            atomic_dataframe_to_csv(history_df, FEDERATED_HISTORY_PATH)
-            atomic_joblib_dump(fl_metrics, FEDERATED_METRICS_PATH)
-
-            meta = {
-                "last_trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "dataset_file": train_source.name,
-                "dataset_rows": int(len(train_df)),
-                "test_size": float(test_size),
-                "fl_rounds": int(fl_rounds),
-                "local_epochs": int(local_epochs),
-                "fl_learning_rate": float(fl_learning_rate),
-                "backup_dir": str(backup_path),
-                "random_forest_metrics": rf_metrics,
-                "federated_metrics": fl_metrics,
-                "mean_baseline_metrics": mean_metrics,
-                "fl_diagnostics": fl_diagnostics
-            }
-            save_training_meta(meta)
-
-            clear_model_caches()
-            progress.progress(100)
-            status.success("Training completed successfully.")
-
-            st.subheader("Training Completion Status")
-            st.success(
-                "Random Forest and Federated Neural Network were retrained "
-                "and saved. Caches cleared so prediction pages use the "
-                "updated models."
-            )
-            st.caption(f"Backup location: `{backup_path}`")
-
-            st.subheader("Prediction Diagnostics")
-            st.json({
-                "target_train": fl_diagnostics["target_train"],
-                "prediction_test": fl_diagnostics["prediction_test"],
-                "output_bias_init": fl_diagnostics["output_bias_init"],
-                "best_round": fl_diagnostics["best_round"],
-                "client_sizes": fl_diagnostics["client_sizes"]
-            })
-            st.caption(
-                f"Test prediction stats — min={float(np.min(fl_test_pred)):.2f}, "
-                f"max={float(np.max(fl_test_pred)):.2f}, "
-                f"mean={float(np.mean(fl_test_pred)):.2f}"
-            )
-
-            st.subheader("Model Comparison vs Mean Baseline")
-            compare_rows = pd.DataFrame([
-                {
-                    "Model": "Mean Baseline",
-                    "MAE": round(mean_metrics["MAE"], 3),
-                    "RMSE": round(mean_metrics["RMSE"], 3),
-                    "R2": round(mean_metrics["R2"], 3)
-                },
-                {
-                    "Model": "Random Forest",
-                    "MAE": round(rf_metrics["MAE"], 3),
-                    "RMSE": round(rf_metrics["RMSE"], 3),
-                    "R2": round(rf_metrics["R2"], 3)
-                },
-                {
-                    "Model": "Federated Neural Network",
-                    "MAE": round(fl_metrics["MAE"], 3),
-                    "RMSE": round(fl_metrics["RMSE"], 3),
-                    "R2": round(fl_metrics["R2"], 3)
-                }
-            ])
-            st.dataframe(compare_rows, width="stretch", hide_index=True)
-
-            st.subheader("Before vs After Model Performance")
-            rows = []
-            for model_name, before, after in [
-                ("Random Forest", before_metrics["Random Forest"], rf_metrics),
-                (
-                    "Federated Neural Network",
-                    before_metrics["Federated Neural Network"],
-                    fl_metrics
-                )
-            ]:
-                rows.append({
-                    "Model": model_name,
-                    "Before MAE": None if before is None else round(before["MAE"], 2),
-                    "After MAE": round(after["MAE"], 2),
-                    "Before RMSE": None if before is None else round(before["RMSE"], 2),
-                    "After RMSE": round(after["RMSE"], 2),
-                    "Before R2": None if before is None else round(before["R2"], 3),
-                    "After R2": round(after["R2"], 3)
+    
+                st.write("Target diagnostics (train split)")
+                st.json({
+                    "min": float(np.min(y_train)),
+                    "max": float(np.max(y_train)),
+                    "mean": float(np.mean(y_train)),
+                    "std": float(np.std(y_train))
                 })
-            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    
+                # Capture before metrics from currently deployed models
+                before_metrics = {"Random Forest": None, "Federated Neural Network": None}
+                status.info("Evaluating current models (before)...")
+                try:
+                    if MODEL_PATH.exists():
+                        current_rf = joblib.load(MODEL_PATH)
+                        before_metrics["Random Forest"] = evaluate_regression(
+                            y_test, current_rf.predict(X_test)
+                        )
+                    if FEDERATED_MODEL_PATH.exists() and SCALER_PATH.exists():
+                        from tensorflow import keras
+                        current_fl = keras.models.load_model(FEDERATED_MODEL_PATH)
+                        current_scaler = joblib.load(SCALER_PATH)
+                        before_pred = current_fl.predict(
+                            current_scaler.transform(X_test), verbose=0
+                        ).ravel()
+                        before_metrics["Federated Neural Network"] = (
+                            evaluate_regression(y_test, before_pred)
+                        )
+                except Exception:
+                    pass
+    
+                progress.progress(15)
+                status.info("Creating model backups...")
+                backup_path = backup_existing_artifacts("pre_retrain")
+    
+                status.info("Training Random Forest...")
+                rf_model, rf_metrics, _rf_pred = train_random_forest(
+                    X_train, y_train, X_test, y_test
+                )
+                progress.progress(40)
+    
+                def fl_progress(round_idx, total_rounds, loss_value, mae_value):
+                    pct = 40 + int(50 * (round_idx / total_rounds))
+                    progress.progress(min(pct, 90))
+                    status.info(
+                        f"Federated round {round_idx}/{total_rounds} | "
+                        f"loss={loss_value:.4f} | mae={mae_value:.4f}"
+                    )
+    
+                status.info(
+                    "Training Federated Neural Network with department-wise FedAvg..."
+                )
+                (
+                    fl_model,
+                    fl_scaler,
+                    fl_metrics,
+                    history_df,
+                    fl_diagnostics
+                ) = train_federated_model(
+                    X_train,
+                    y_train,
+                    dept_train,
+                    X_test,
+                    y_test,
+                    rounds=int(fl_rounds),
+                    local_epochs=int(local_epochs),
+                    learning_rate=float(fl_learning_rate),
+                    progress_callback=fl_progress
+                )
+    
+                # Honest baseline comparison on the same untouched test split
+                mean_baseline_pred = np.full(
+                    shape=len(y_test),
+                    fill_value=float(np.mean(y_train)),
+                    dtype=float
+                )
+                mean_metrics = evaluate_regression(y_test, mean_baseline_pred)
+                fl_test_pred = fl_model.predict(
+                    fl_scaler.transform(pd.DataFrame(X_test, columns=FEATURES)),
+                    verbose=0
+                ).ravel()
+    
+                status.info("Saving updated artifacts atomically...")
+                atomic_joblib_dump(rf_model, MODEL_PATH)
+                atomic_keras_save(fl_model, FEDERATED_MODEL_PATH)
+                atomic_joblib_dump(fl_scaler, SCALER_PATH)
+                atomic_dataframe_to_csv(history_df, FEDERATED_HISTORY_PATH)
+                atomic_joblib_dump(fl_metrics, FEDERATED_METRICS_PATH)
+    
+                meta = {
+                    "last_trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "dataset_file": train_source.name,
+                    "dataset_rows": int(len(train_df)),
+                    "test_size": float(test_size),
+                    "fl_rounds": int(fl_rounds),
+                    "local_epochs": int(local_epochs),
+                    "fl_learning_rate": float(fl_learning_rate),
+                    "backup_dir": str(backup_path),
+                    "random_forest_metrics": rf_metrics,
+                    "federated_metrics": fl_metrics,
+                    "mean_baseline_metrics": mean_metrics,
+                    "fl_diagnostics": fl_diagnostics
+                }
+                save_training_meta(meta)
+    
+                clear_model_caches()
+                progress.progress(100)
+                status.success("Training completed successfully.")
+    
+                st.subheader("Training Completion Status")
+                st.success(
+                    "Random Forest and Federated Neural Network were retrained "
+                    "and saved. Caches cleared so prediction pages use the "
+                    "updated models."
+                )
+                st.caption(f"Backup location: `{backup_path}`")
+    
+                st.subheader("Prediction Diagnostics")
+                st.json({
+                    "target_train": fl_diagnostics["target_train"],
+                    "prediction_test": fl_diagnostics["prediction_test"],
+                    "output_bias_init": fl_diagnostics["output_bias_init"],
+                    "best_round": fl_diagnostics["best_round"],
+                    "client_sizes": fl_diagnostics["client_sizes"]
+                })
+                st.caption(
+                    f"Test prediction stats — min={float(np.min(fl_test_pred)):.2f}, "
+                    f"max={float(np.max(fl_test_pred)):.2f}, "
+                    f"mean={float(np.mean(fl_test_pred)):.2f}"
+                )
+    
+                st.subheader("Model Comparison vs Mean Baseline")
+                compare_rows = pd.DataFrame([
+                    {
+                        "Model": "Mean Baseline",
+                        "MAE": round(mean_metrics["MAE"], 3),
+                        "RMSE": round(mean_metrics["RMSE"], 3),
+                        "R2": round(mean_metrics["R2"], 3)
+                    },
+                    {
+                        "Model": "Random Forest",
+                        "MAE": round(rf_metrics["MAE"], 3),
+                        "RMSE": round(rf_metrics["RMSE"], 3),
+                        "R2": round(rf_metrics["R2"], 3)
+                    },
+                    {
+                        "Model": "Federated Neural Network",
+                        "MAE": round(fl_metrics["MAE"], 3),
+                        "RMSE": round(fl_metrics["RMSE"], 3),
+                        "R2": round(fl_metrics["R2"], 3)
+                    }
+                ])
+                st.dataframe(compare_rows, width="stretch", hide_index=True)
+    
+                st.subheader("Before vs After Model Performance")
+                rows = []
+                for model_name, before, after in [
+                    ("Random Forest", before_metrics["Random Forest"], rf_metrics),
+                    (
+                        "Federated Neural Network",
+                        before_metrics["Federated Neural Network"],
+                        fl_metrics
+                    )
+                ]:
+                    rows.append({
+                        "Model": model_name,
+                        "Before MAE": None if before is None else round(before["MAE"], 2),
+                        "After MAE": round(after["MAE"], 2),
+                        "Before RMSE": None if before is None else round(before["RMSE"], 2),
+                        "After RMSE": round(after["RMSE"], 2),
+                        "Before R2": None if before is None else round(before["R2"], 3),
+                        "After R2": round(after["R2"], 3)
+                    })
+                st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    
+                st.subheader("Updated Federated Training History")
+                st.dataframe(history_df, width="stretch", hide_index=True)
+    
+            except Exception as exc:
+                progress.progress(0)
+                status.error("Training failed. Existing models were preserved.")
+                st.exception(exc)
+    
 
-            st.subheader("Updated Federated Training History")
-            st.dataframe(history_df, width="stretch", hide_index=True)
+    with import_tab2:
+        st.subheader("Field Sales CSV Import & Dedicated Model Training")
+        st.caption("Sales-specific KPI data schema and isolated Random Forest Regressor workflow.")
 
-        except Exception as exc:
-            progress.progress(0)
-            status.error("Training failed. Existing models were preserved.")
-            st.exception(exc)
+        fs_meta = load_field_sales_training_meta()
+        f_c1, f_c2, f_c3 = st.columns(3)
+        f_c1.metric("Field Sales Dataset", FIELD_SALES_MASTER_PATH.name)
+        f_c2.metric("Total Records", len(field_sales_df) if field_sales_df is not None else 0)
+        f_c3.metric("Last Trained", fs_meta.get("last_trained_at", "Not trained yet"))
+
+        st.markdown("---")
+        st.subheader("1) Field Sales CSV Data Import Center")
+        fs_uploaded = st.file_uploader(
+            "Upload Field Sales CSV",
+            type=["csv"],
+            key="fs_csv_uploader",
+            help="Upload CSV containing required Field Sales columns including clients_visited, leads_generated, sales_revenue, etc."
+        )
+
+        if fs_uploaded is not None:
+            try:
+                fs_upload_df = pd.read_csv(fs_uploaded)
+            except Exception as exc:
+                st.error(f"Unable to read CSV: {exc}")
+                fs_upload_df = None
+
+            if fs_upload_df is not None:
+                st.write(f"Uploaded preview | Rows: {fs_upload_df.shape[0]} | Columns: {fs_upload_df.shape[1]}")
+                st.dataframe(fs_upload_df.head(15), width="stretch")
+
+                # Auto-calculate derived features if missing or requested
+                if "orders_closed" in fs_upload_df.columns and "leads_generated" in fs_upload_df.columns:
+                    calc_conv = (fs_upload_df["orders_closed"] / fs_upload_df["leads_generated"].replace(0, np.nan)) * 100.0
+                    fs_upload_df["conversion_rate"] = calc_conv.fillna(0.0).round(2)
+
+                if "sales_revenue" in fs_upload_df.columns and "sales_target" in fs_upload_df.columns:
+                    calc_ach = (fs_upload_df["sales_revenue"] / fs_upload_df["sales_target"].replace(0, np.nan)) * 100.0
+                    fs_upload_df["target_achievement_percentage"] = calc_ach.fillna(0.0).round(2)
+
+                fs_validation = validate_field_sales_dataframe(fs_upload_df)
+
+                fv1, fv2, fv3, fv4 = st.columns(4)
+                fv1.metric("Rows", fs_validation["rows"])
+                fv2.metric("Columns", fs_validation["columns"])
+                fv3.metric("Duplicate Rows", fs_validation["duplicate_rows"])
+                fv4.metric("Duplicate IDs", fs_validation["duplicate_employee_ids"])
+
+                if fs_validation["missing_columns"]:
+                    st.error("Missing required Field Sales columns: " + ", ".join(fs_validation["missing_columns"]))
+                if fs_validation["missing_values"]:
+                    st.error("Missing values detected:")
+                    st.json(fs_validation["missing_values"])
+                for warning in fs_validation["warnings"]:
+                    st.warning(warning)
+                for error in fs_validation["errors"]:
+                    if "Missing required columns" not in error and "Missing values" not in error:
+                        st.error(error)
+
+                if fs_validation["ok"]:
+                    st.success("Field Sales CSV validation passed.")
+                    st.subheader("Field Sales Dataset Statistics")
+                    st.dataframe(fs_upload_df[FIELD_SALES_NUMERIC_COLUMNS].describe().T, width="stretch")
+
+                    fs_mode = st.radio(
+                        "How should this CSV update the Field Sales master dataset?",
+                        ["Append to Field Sales dataset", "Replace Field Sales dataset"],
+                        horizontal=True,
+                        key="fs_update_mode"
+                    )
+
+                    current_fs_master = (
+                        pd.read_csv(FIELD_SALES_MASTER_PATH)
+                        if FIELD_SALES_MASTER_PATH.exists()
+                        else fs_upload_df.copy()
+                    )
+
+                    st.download_button(
+                        "Download safety backup of current Field Sales dataset",
+                        data=current_fs_master.to_csv(index=False).encode("utf-8"),
+                        file_name="field_sales_safety_backup.csv",
+                        mime="text/csv",
+                        key="download_fs_backup"
+                    )
+
+                    if st.button("Apply Field Sales Dataset Update", type="primary", key="btn_apply_fs_update"):
+                        try:
+                            backup_path = backup_dataset(current_fs_master, "field_sales_backup")
+                            incoming_fs = fs_upload_df[FIELD_SALES_REQUIRED_COLUMNS].copy()
+
+                            if fs_mode.startswith("Append"):
+                                combined_fs = pd.concat(
+                                    [current_fs_master[FIELD_SALES_REQUIRED_COLUMNS], incoming_fs],
+                                    ignore_index=True
+                                )
+                                combined_fs = combined_fs.drop_duplicates()
+                                combined_fs = combined_fs.drop_duplicates(subset=["employee_id"], keep="last")
+                                action = "append"
+                            else:
+                                combined_fs = incoming_fs.drop_duplicates()
+                                combined_fs = combined_fs.drop_duplicates(subset=["employee_id"], keep="last")
+                                action = "replace"
+
+                            atomic_dataframe_to_csv(combined_fs, FIELD_SALES_MASTER_PATH)
+                            clear_model_caches()
+                            st.success(
+                                f"Field Sales dataset updated via {action}. "
+                                f"Saved to `{FIELD_SALES_MASTER_PATH.name}` ({len(combined_fs)} rows). "
+                                f"Normal employee dataset was NOT modified. Backup: `{backup_path.name}`."
+                            )
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Field Sales dataset update failed: {exc}")
+
+                    st.download_button(
+                        "Download imported Field Sales CSV",
+                        data=fs_upload_df.to_csv(index=False).encode("utf-8"),
+                        file_name="imported_field_sales_data.csv",
+                        mime="text/csv",
+                        key="download_imported_fs_csv"
+                    )
+                else:
+                    st.error("Validation failed. Please resolve the errors above before updating the dataset.")
+
+        st.divider()
+        st.subheader("2) Field Sales Master Dataset Management")
+        fs_master_exists = FIELD_SALES_MASTER_PATH.exists()
+        current_fs_df = pd.read_csv(FIELD_SALES_MASTER_PATH) if fs_master_exists else None
+
+        if fs_master_exists and current_fs_df is not None:
+            st.write(f"Field Sales Master rows: {len(current_fs_df)}")
+            st.dataframe(current_fs_df.head(10), width="stretch")
+            st.download_button(
+                "Download Field Sales Master Dataset",
+                data=current_fs_df.to_csv(index=False).encode("utf-8"),
+                file_name="field_sales_master.csv",
+                mime="text/csv",
+                key="download_fs_master_csv"
+            )
+        else:
+            st.info("No Field Sales master dataset created yet. Upload a valid Field Sales CSV above.")
+
+        st.divider()
+        st.subheader("3) Train / Update Field Sales Model")
+        st.info("Dedicated Random Forest Regressor trained on Field Sales KPI features without mixing normal employee features.")
+
+        f_cfg1, f_cfg2, f_cfg3 = st.columns(3)
+        with f_cfg1:
+            fs_n_estimators = st.number_input("Number of Trees", min_value=10, max_value=500, value=100, step=10, key="fs_nest")
+        with f_cfg2:
+            fs_test_size = st.selectbox("Test split ratio", options=[0.2, 0.25, 0.3], index=0, key="fs_test_size")
+        with f_cfg3:
+            fs_random_state = st.number_input("Random Seed", min_value=0, max_value=999, value=42, key="fs_seed")
+
+        if st.button("Train / Update Field Sales Model", type="primary", key="btn_train_fs_model"):
+            if not FIELD_SALES_MASTER_PATH.exists():
+                st.error("Field Sales master dataset not found! Please import or initialize data first.")
+            else:
+                fs_prog = st.progress(0)
+                fs_status = st.empty()
+                try:
+                    fs_status.info("Loading and validating Field Sales dataset...")
+                    train_fs_df = pd.read_csv(FIELD_SALES_MASTER_PATH)
+                    val = validate_field_sales_dataframe(train_fs_df)
+                    if not val["ok"]:
+                        raise ValueError("Field Sales dataset validation failed: " + " | ".join(val["errors"]))
+
+                    if len(train_fs_df) < 15:
+                        raise ValueError("Need at least 15 Field Sales rows for reliable model training.")
+
+                    fs_prog.progress(20)
+                    fs_status.info("Preparing features and target split...")
+                    X_fs = train_fs_df[FIELD_SALES_FEATURES]
+                    y_fs = train_fs_df["performance_score"]
+
+                    X_train, X_test, y_train, y_test = train_test_split(
+                        X_fs, y_fs, test_size=float(fs_test_size), random_state=int(fs_random_state)
+                    )
+
+                    fs_prog.progress(40)
+                    fs_status.info("Fitting feature standardizer...")
+                    fs_preprocessor = StandardScaler()
+                    X_train_scaled = fs_preprocessor.fit_transform(X_train)
+                    X_test_scaled = fs_preprocessor.transform(X_test)
+
+                    fs_prog.progress(60)
+                    fs_status.info("Training Field Sales Random Forest Regressor...")
+                    fs_rf = RandomForestRegressor(
+                        n_estimators=int(fs_n_estimators),
+                        random_state=int(fs_random_state),
+                        max_depth=12,
+                        min_samples_split=3
+                    )
+                    fs_rf.fit(X_train_scaled, y_train)
+
+                    fs_prog.progress(80)
+                    fs_status.info("Evaluating model metrics on test set...")
+                    y_pred = fs_rf.predict(X_test_scaled)
+                    fs_mae = float(mean_absolute_error(y_test, y_pred))
+                    fs_rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+                    fs_r2 = float(r2_score(y_test, y_pred))
+
+                    # Atomic saves
+                    atomic_joblib_dump(fs_rf, FIELD_SALES_MODEL_PATH)
+                    atomic_joblib_dump(fs_preprocessor, FIELD_SALES_PREPROCESSOR_PATH)
+
+                    meta_dict = {
+                        "last_trained_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "dataset_file": FIELD_SALES_MASTER_PATH.name,
+                        "dataset_rows": int(len(train_fs_df)),
+                        "features": FIELD_SALES_FEATURES,
+                        "target": "performance_score",
+                        "test_size": float(fs_test_size),
+                        "metrics": {
+                            "MAE": fs_mae,
+                            "RMSE": fs_rmse,
+                            "R2": fs_r2
+                        },
+                        "feature_importances": dict(
+                            zip(FIELD_SALES_FEATURES, [float(x) for x in fs_rf.feature_importances_])
+                        )
+                    }
+                    save_field_sales_training_meta(meta_dict)
+
+                    # Update history
+                    new_hist_row = pd.DataFrame([{
+                        "training_timestamp": meta_dict["last_trained_at"],
+                        "dataset_rows": int(len(train_fs_df)),
+                        "mae": round(fs_mae, 4),
+                        "rmse": round(fs_rmse, 4),
+                        "r2": round(fs_r2, 4)
+                    }])
+                    if FIELD_SALES_HISTORY_PATH.exists():
+                        old_hist = pd.read_csv(FIELD_SALES_HISTORY_PATH)
+                        combined_hist = pd.concat([old_hist, new_hist_row], ignore_index=True)
+                    else:
+                        combined_hist = new_hist_row
+                    atomic_dataframe_to_csv(combined_hist, FIELD_SALES_HISTORY_PATH)
+
+                    clear_model_caches()
+                    fs_prog.progress(100)
+                    fs_status.success("Field Sales Random Forest model trained and saved successfully!")
+
+                    # Show Results
+                    st.subheader("Training Metrics")
+                    tm1, tm2, tm3 = st.columns(3)
+                    tm1.metric("MAE", f"{fs_mae:.4f}")
+                    tm2.metric("RMSE", f"{fs_rmse:.4f}")
+                    tm3.metric("R² Score", f"{fs_r2:.4f}")
+
+                    # Feature importance chart
+                    feat_imp_df = pd.DataFrame({
+                        "Feature": FIELD_SALES_FEATURES,
+                        "Importance": fs_rf.feature_importances_
+                    }).sort_values(by="Importance", ascending=True)
+
+                    fig_fi = px.bar(
+                        feat_imp_df,
+                        x="Importance",
+                        y="Feature",
+                        orientation="h",
+                        title="Field Sales Model Feature Importances"
+                    )
+                    st.plotly_chart(fig_fi, width="stretch")
+
+                except Exception as exc:
+                    fs_prog.progress(0)
+                    fs_status.error(f"Field Sales model training failed: {exc}")
+                    st.exception(exc)
 
 # =================================================
-# 6. TRAINING RECOMMENDATION
+# 8. TRAINING RECOMMENDATION
 # =================================================
 elif page == "Training Recommendation":
 
     st.header("Training Recommendation")
 
+    normal_ids = df["employee_id"].tolist()
+    fs_ids = field_sales_df["employee_id"].tolist() if (field_sales_df is not None and not field_sales_df.empty) else []
+    all_employee_ids = normal_ids + [fid for fid in fs_ids if fid not in normal_ids]
+
     employee_id = st.selectbox(
         "Select Employee",
-        df["employee_id"].tolist()
+        all_employee_ids
     )
 
-    employee = df[
-        df["employee_id"] == employee_id
-    ].iloc[0]
+    is_fs_employee = False
+    if employee_id in df["employee_id"].tolist():
+        employee = df[df["employee_id"] == employee_id].iloc[0]
+    elif field_sales_df is not None and not field_sales_df.empty and employee_id in field_sales_df["employee_id"].tolist():
+        employee = field_sales_df[field_sales_df["employee_id"] == employee_id].iloc[0]
+        is_fs_employee = True
+    else:
+        employee = df.iloc[0]
 
     st.write("Department:", employee["department"])
     st.write("Job Role:", employee["job_role"])
 
-    st.metric(
-        "Task Completion",
-        f"{employee['task_completion_rate']:.2f}%"
-    )
-
-    st.metric(
-        "Quality Score",
-        employee["quality_score"]
-    )
-
-    st.metric(
-        "Training Hours",
-        employee["training_hours"]
-    )
-
     recommendations = []
 
-    if employee["task_completion_rate"] < 70:
-        recommendations.append(
-            "Task Planning and Time Management Training"
-        )
+    if is_fs_employee:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Conversion Rate", f"{employee['conversion_rate']:.1f}%")
+        m2.metric("Target Achievement", f"{employee['target_achievement_percentage']:.1f}%")
+        m3.metric("Performance Score", f"{employee['performance_score']:.1f}")
 
-    if employee["quality_score"] < 70:
-        recommendations.append(
-            "Work Quality Improvement Training"
-        )
+        # Field Sales Specific Recommendations
+        if employee["conversion_rate"] < 30:
+            recommendations.append("Lead Conversion & Pitch Mastery Training")
+        if employee["target_achievement_percentage"] < 80:
+            recommendations.append("Advanced Negotiation & Deal Closing Workshop")
+        if employee["followups_completed"] < employee["leads_generated"] * 1.5:
+            recommendations.append("Customer Relationship Management & Follow-up Strategy")
+        if employee["total_travel_km"] > 1000 and employee["target_achievement_percentage"] < 75:
+            recommendations.append("Territory Planning & Route Optimization Workshop")
+        if employee.get("clients_visited", 0) < 30:
+            recommendations.append("Sales Communication & High-Impact Prospecting")
+        if not recommendations:
+            recommendations.append("Strategic Key Account Management & Enterprise Sales")
+    else:
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Task Completion", f"{employee['task_completion_rate']:.2f}%")
+        m2.metric("Quality Score", str(employee["quality_score"]))
+        m3.metric("Training Hours", str(employee["training_hours"]))
 
-    if employee["training_hours"] < 5:
-        recommendations.append(
-            "Skill Development Program"
-        )
-
-    if employee["workload_score"] > 80:
-        recommendations.append(
-            "Workload Management and Support"
-        )
-
-    if not recommendations:
-        recommendations.append(
-            "Advanced Skill Development and Career Growth"
-        )
+        if employee["task_completion_rate"] < 70:
+            recommendations.append("Task Planning and Time Management Training")
+        if employee["quality_score"] < 70:
+            recommendations.append("Work Quality Improvement Training")
+        if employee["training_hours"] < 5:
+            recommendations.append("Skill Development Program")
+        if employee["workload_score"] > 80:
+            recommendations.append("Workload Management and Support")
+        if not recommendations:
+            recommendations.append("Advanced Skill Development and Career Growth")
 
     st.subheader("Suggested Support")
-
     for recommendation in recommendations:
         st.info("📘 " + recommendation)
 
 # =================================================
-# 7. EMPLOYEE DATA + CSV DOWNLOAD
+# 9. EMPLOYEE DATA + CSV DOWNLOAD
 # =================================================
 elif page == "Employee Data":
 
     st.header("Employee Data Management")
 
-    departments = ["All"] + sorted(df["department"].unique())
+    data_tab1, data_tab2 = st.tabs(["Normal Employees Master Data", "Field Sales Master Data"])
 
-    selected = st.selectbox(
-        "Filter Department",
-        departments
-    )
+    with data_tab1:
+        st.subheader("Normal Employee Records")
+        departments = ["All"] + sorted(df["department"].unique())
+        selected = st.selectbox("Filter Department", departments, key="emp_data_dept_filter")
+        search = st.text_input("Search Employee ID", key="emp_data_search")
 
-    search = st.text_input("Search Employee ID")
+        filtered = df.copy()
+        if selected != "All":
+            filtered = filtered[filtered["department"] == selected]
 
-    filtered = df.copy()
+        if search:
+            filtered = filtered[
+                filtered["employee_id"].astype(str).str.contains(search, case=False, na=False)
+            ]
 
-    if selected != "All":
-        filtered = filtered[
-            filtered["department"] == selected
-        ]
+        st.write(f"Total Normal Records: {len(filtered)}")
+        st.dataframe(filtered, width="stretch")
 
-    if search:
-        filtered = filtered[
-            filtered["employee_id"].astype(str).str.contains(
-                search, case=False, na=False
+        csv_data = filtered.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Download Employee CSV",
+            data=csv_data,
+            file_name="employee_performance_report.csv",
+            mime="text/csv",
+            key="dl_normal_emp_csv"
+        )
+
+    with data_tab2:
+        st.subheader("Field Sales Records")
+        if field_sales_df is None or field_sales_df.empty:
+            st.info("No Field Sales records available.")
+        else:
+            fs_search = st.text_input("Search Field Sales Employee ID", key="fs_data_search")
+            filtered_fs = field_sales_df.copy()
+
+            if fs_search:
+                filtered_fs = filtered_fs[
+                    filtered_fs["employee_id"].astype(str).str.contains(fs_search, case=False, na=False)
+                ]
+
+            st.write(f"Total Field Sales Records: {len(filtered_fs)}")
+            st.dataframe(filtered_fs, width="stretch")
+
+            fs_csv_data = filtered_fs.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="Download Field Sales CSV",
+                data=fs_csv_data,
+                file_name="field_sales_performance_report.csv",
+                mime="text/csv",
+                key="dl_fs_emp_csv"
             )
-        ]
-
-    st.write(f"Total Records: {len(filtered)}")
-
-    st.dataframe(
-        filtered,
-        width="stretch"
-    )
-
-    csv_data = filtered.to_csv(index=False).encode("utf-8")
-
-    st.download_button(
-        label="Download Employee CSV",
-        data=csv_data,
-        file_name="employee_performance_report.csv",
-        mime="text/csv"
-    )
 
 # ---------------- FOOTER ----------------
 st.divider()

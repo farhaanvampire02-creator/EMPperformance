@@ -1,55 +1,55 @@
 {
-  "last_trained_at": "2026-11-06 14:38:15",
+  "last_trained_at": "2026-11-07 20:13:33",
   "dataset_file": "employee_performance_master.csv",
-  "dataset_rows": 1500,
+  "dataset_rows": 50000,
   "test_size": 0.2,
   "fl_rounds": 8,
   "local_epochs": 8,
   "fl_learning_rate": 0.005,
-  "backup_dir": "E:\\EMPperformance\\model_backups\\pre_retrain_20261106_143643",
+  "backup_dir": "E:\\EMPperformance\\model_backups\\pre_retrain_20261107_200737",
   "random_forest_metrics": {
-    "MAE": 5.417843666666667,
-    "RMSE": 6.833480860603426,
-    "R2": 0.2673347732437654
+    "MAE": 2.4661399999999993,
+    "RMSE": 3.0906020215809087,
+    "R2": 0.6585794957392229
   },
   "federated_metrics": {
-    "MAE": 5.814579317220051,
-    "RMSE": 7.218623382881503,
-    "R2": 0.18241976653889014,
-    "best_round": 1,
-    "val_mae_best": 5.668205552842882
+    "MAE": 2.3904621851348877,
+    "RMSE": 3.0004491235470385,
+    "R2": 0.6782074649906538,
+    "best_round": 3,
+    "val_mae_best": 2.420139472707113
   },
   "mean_baseline_metrics": {
-    "MAE": 6.47016888888889,
-    "RMSE": 8.07680788150382,
-    "R2": -0.023531282015855748
+    "MAE": 4.22317727,
+    "RMSE": 5.289302473909013,
+    "R2": -5.464581980252348e-07
   },
   "fl_diagnostics": {
     "target_train": {
-      "min": 54.0,
-      "max": 100.0,
-      "mean": 77.41901666666668,
-      "std": 7.961654248106288
+      "min": 53.0,
+      "max": 98.5,
+      "mean": 77.20065,
+      "std": 5.3195278998704385
     },
     "prediction_test": {
-      "min": 71.63699340820312,
-      "max": 90.7880859375,
-      "mean": 78.68278503417969,
-      "std": 3.749988079071045
+      "min": 60.811180114746094,
+      "max": 89.65774536132812,
+      "mean": 77.2932357788086,
+      "std": 4.1606574058532715
     },
-    "output_bias_init": 77.25257843137254,
+    "output_bias_init": 77.21540882352942,
     "client_sizes": {
-      "Engineering": 136,
-      "Finance": 155,
-      "HR": 175,
-      "IT": 73,
-      "Marketing": 195,
-      "Operations": 73,
-      "Sales": 213
+      "Engineering": 4655,
+      "Finance": 5641,
+      "HR": 5666,
+      "IT": 2897,
+      "Marketing": 6011,
+      "Operations": 2255,
+      "Sales": 6875
     },
     "learning_rate": 0.005,
     "local_epochs": 8,
     "rounds": 8,
-    "best_round": 1
+    "best_round": 3
   }
 }

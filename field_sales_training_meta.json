@@ -1,0 +1,34 @@
+{
+  "last_trained_at": "2026-11-07 20:06:03",
+  "dataset_file": "field_sales_master.csv",
+  "dataset_rows": 50150,
+  "features": [
+    "total_travel_km",
+    "clients_visited",
+    "leads_generated",
+    "orders_closed",
+    "sales_revenue",
+    "followups_completed",
+    "experience_years",
+    "conversion_rate",
+    "target_achievement_percentage"
+  ],
+  "target": "performance_score",
+  "test_size": 0.2,
+  "metrics": {
+    "MAE": 4.965965345490809,
+    "RMSE": 6.242440816247164,
+    "R2": 0.8306129713123052
+  },
+  "feature_importances": {
+    "total_travel_km": 0.010652566444700978,
+    "clients_visited": 0.007448178512387359,
+    "leads_generated": 0.004488392629206387,
+    "orders_closed": 0.002740803672472897,
+    "sales_revenue": 0.009804515758778266,
+    "followups_completed": 0.008589016229083804,
+    "experience_years": 0.013984142771636008,
+    "conversion_rate": 0.5881146838448948,
+    "target_achievement_percentage": 0.3541777001368396
+  }
+}

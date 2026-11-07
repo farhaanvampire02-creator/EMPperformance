@@ -1,7 +1,11 @@
-
 __pycache__/
 *.pyc
 .venv/
 venv/
 .env
 .streamlit/secrets.toml
+dataset_backups/
+model_backups/
+emphr_backup_*.py
+
+employee_performance_model.pkl
